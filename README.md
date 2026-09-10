@@ -44,6 +44,15 @@ agent 子进程 ──HTTP──▶ cpx（per-session proxy）──透传──
 
 要求 Node.js ≥ 20。
 
+**方式一：npm 一键安装（推荐）**
+
+```bash
+npm install -g cannbot-proxy
+cpx claude -p "用一句话介绍自己"    # 冒烟验证；国内网络可加 --registry=https://registry.npmmirror.com
+```
+
+**方式二：源码安装**
+
 ```bash
 git clone <本仓地址> && cd cannbot-proxy
 ./install.sh
