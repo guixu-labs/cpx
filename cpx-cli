@@ -10,11 +10,12 @@
 # cpx-cli — wrapper so users don't need an alias. Resolves its own location
 # (cwd-agnostic) and delegates to tsx + the real cpx-cli.ts. Works from any dir;
 # proxy/install.sh puts `cpx` on PATH (the root ./start.sh delegates to it).
-# Prefers proxy/node_modules/.bin/tsx (standalone), then repo root, then npx.
+# Prefers proxy/node_modules/.bin/tsx (standalone), then repo root / sibling
+# insight package (in-repo runs), then npx.
 set -e
 SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
 TSX=""
-for d in "$SCRIPT_DIR" "$SCRIPT_DIR/.." "$SCRIPT_DIR/../.."; do
+for d in "$SCRIPT_DIR" "$SCRIPT_DIR/.." "$SCRIPT_DIR/../.." "$SCRIPT_DIR/../insight"; do
   [ -x "$d/node_modules/.bin/tsx" ] && TSX="$d/node_modules/.bin/tsx" && break
 done
 [ -n "$TSX" ] || TSX="npx --yes tsx"
