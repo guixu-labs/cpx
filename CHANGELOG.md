@@ -2,7 +2,13 @@
 
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 
-## [Unreleased]
+## [v0.1.3] - 2026-09-14
+
+### Changed
+- 【`--autoupload` 零感上传：范式目录默认 `others`，全程零交互】未指定 `--category` 时默认回落数据之仓的 `others` 收纳位（非算子会话归置）——配合提交人自动取 git 用户名，两个硬必选信息全部有默认，**会话结束直接无感上传**：不弹向导、不按回车、非交互不报错。精确分类显式给 `--category`（同 sid 换目录重传即原子迁移，事后归位零成本）；输错目录仍报错附白名单一次自纠。向导仅保留给真正无兜底的极端场景（机器连 git 用户名都取不到时问提交人）
+
+### Removed
+- 【`cpx normalize` 命令与 norm/ 规范层移除】norm/ 镜像层早已退役（与 verbatim 逐行相同的冗余副本，insight 直读 verbatim 导入与 serving，零消费方）——彻底清理：删除 `src/normalize/` 模块与 normalizer 测试，子命令改为指路提示（存量 norm/ 件不迁移不删除），Tab 补全同步摘除
 
 ### Added
 - 【工作流自动上传——agent 编排场景收尾闭环】用户零参数起会话（`cpx claude --autoupload`），工作流末尾加标准收尾片段，任务完成时 agent 自行执行 `cpx upload` 完成上传，信息各归其位：提交人=机器 `git config user.name`（**非交互路径同样自动兜底**，此前仅向导有默认值）、描述=agent 自述（`--desc`）、成败=agent 自报（`--opgen`）、范式目录=模板写死或白名单自选。配套三件机制：

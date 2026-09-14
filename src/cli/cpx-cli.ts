@@ -12,7 +12,6 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { normalizeSession, normalizeAll } from '../normalize';
 import { sessionFilePath, sidsFilePath, resolveCapturePath, compressCaptureFile, readCaptureText, sessionMetaPath } from '../writer.ts';
 import { VERSION, VERSION_DISPLAY } from '../version.ts';
 import { redactString } from '../redactor.ts';
@@ -74,16 +73,15 @@ const USAGE = `cpx ${VERSION_DISPLAY} — agent↔模型明文捕获代理编排
 用法：
   cpx <agent-cmd> [args...]              例: cpx claude / cpx codex / cpx cannbot
   cpx --agent <claude|opencode|cannbot|codex|openai|generic> -- <cmd> [args]
-  cpx <agent-cmd> --autoupload [args...] 会话结束自动导入并上传 CANNBay（六框架通用；
-                                         TTY 下向导收集提交人/范式目录，连按回车即成；
-                                         脚本场景补 --submitter/--category）
+  cpx <agent-cmd> --autoupload [args...] 会话结束无感上传 CANNBay（六框架通用；提交人
+                                         自动取 git 用户名，范式目录缺省默认 others，
+                                         全程零交互；精确分类显式给 --category）
   cpx list                              列出全部捕获会话文件（按时间降序，只读）
   cpx status [--kill [--all]]            查看状态；--kill 清理无 sid 的孤儿 proxy，--all 连活跃会话一起清
   cpx config [dedup on|off]              查看/配置；dedup=注入压缩（默认 off，热生效，只压缩捕获记录不改转发）
-  cpx upload [sid] [flags]               补传会话到 CANNBay（直传，无需 insight；缺省 sid = 最新捕获）。
-                                         TTY 向导收集必选信息（提交人/范式目录，回车取默认）；脚本场景：
-                                         --submitter 名字 --category 范式 [--desc 描述] [--opgen success|failure] [--baseline]
-  cpx normalize [<file.jsonl|sid>]       重新生成 insight-native 规范文件（norm/）；缺省 = 全部捕获
+  cpx upload [sid] [flags]               补传会话到 CANNBay（直传，无需 insight；缺省 sid = 最新捕获，
+                                         零参数即走默认：提交人=git 用户名、范式目录=others）。
+                                         flags：--category 精确分类 [--submitter] [--desc] [--opgen success|failure]
   cpx completion [bash|zsh] [--install]  打印/安装 Tab 补全脚本（sid 动态补全；agent 命令之后不越界）
   cpx --version | -v                     版本号 + 生效代码路径（多仓共存时确认当前副本）
   cpx --help | -h                        本帮助
@@ -606,7 +604,7 @@ function dedupStats(file: string): { savedChars: number; dedupedCount: number } 
 
 // Resolve capture file candidates for a sid or raw path argument. Accepts sid
 // with or without the cpx- prefix, plus plain/`.gz` file paths (shared by the
-// normalize and import subcommands).
+// upload subcommand).
 function captureCandidatesFor(arg: string): string[] {
   return arg.endsWith('.jsonl') || arg.endsWith('.jsonl.gz')
     ? [path.resolve(arg), `${path.resolve(arg)}.gz`]
@@ -758,21 +756,14 @@ async function main(): Promise<void> {
     log('  · 查看捕获清单：cpx list');
     process.exit(2);
   }
+  // `cpx normalize` 已移除（norm/ 镜像层退役：与 verbatim 逐行相同的冗余
+  // 副本，insight 直读 verbatim 导入与 serving）：老习惯敲进来时指路，
+  // 而不是把它当 agent 命令 spawn 报 ENOENT。存量 norm/ 件不迁移不删除。
   if (sub === 'normalize') {
-    const arg = process.argv[3];
-    if (arg) {
-      // Accept sid with or without cpx- prefix, or a direct file path
-      const file = captureCandidatesFor(arg).find(f => fs.existsSync(f));
-      if (!file) { log(`capture not found: ${captureCandidatesFor(arg).join(', ')}`); process.exit(2); }
-      const r = normalizeSession(file);
-      if (!r) { log('normalize failed'); process.exit(1); }
-      log(`norm: ${r.mainFile} (+${r.subagentFiles.length} subagents)`);
-    } else {
-      const rs = normalizeAll();
-      for (const r of rs) log(`norm: ${r.mainFile} (+${r.subagentFiles.length} subagents)`);
-      if (rs.length === 0) log('no captures found');
-    }
-    return;
+    log('`cpx normalize` 已移除 —— norm/ 镜像层退役（insight 直读 verbatim，无需规范文件）：');
+    log('  · 导入：insight Web UI「Import Session → JSONL」或捕获退出自动导入');
+    log('  · 盘上存量 norm/ 文件不受影响（不迁移不删除）');
+    process.exit(2);
   }
   const { profile, agentCmd, agentArgs, uploadArgs, autoUpload } = parseArgs(process.argv);
   if (!agentCmd) {

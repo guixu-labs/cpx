@@ -85,7 +85,7 @@ export function writeMeta(metaPath: string, meta: object): void {
 
 // ── gzip at rest（docs/COMPRESSION-DESIGN.md）──────────────────────────
 // 生命周期：live 明文追加（tail -F / 增量依赖 append）→ 会话关闭压缩
-// （cpx-cli 退出路径：压缩 → normalize → import）→ resume 复用 sid 时解压
+// （cpx-cli 退出路径：压缩 → 导入）→ resume 复用 sid 时解压
 // 回明文 scratch 再追加。meta.json 永远明文（分类契约）。
 
 /** 解析捕获文件真实路径。优先级：明文（live/resume scratch 权威）> 压缩态。

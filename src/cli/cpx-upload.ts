@@ -397,6 +397,14 @@ export async function runUpload(argv: string[], deps: UploadDeps = {}): Promise<
     || (deps.defaultSubmitterImpl ?? (() => defaultSubmitter(deps.env ?? process.env)))();
   if (effSubmitter) flags.submitter = effSubmitter;
 
+  // 范式目录默认：未指定即回落 others（数据之仓非算子会话收纳位）——零参数
+  // 也能无感直传，向导/报错自纠只留给真正需要精确分类的场景；要精确分类显式
+  // 给 --category（同 sid 换目录重传即原子迁移，事后归位零成本）
+  if (!(flags.category ?? '').trim()) {
+    flags.category = 'others';
+    log('范式目录未指定 → 默认 others（精确分类可用 --category 重传归位）');
+  }
+
   const flagsComplete = !!(flags.submitter ?? '').trim() && !!(flags.category ?? '').trim();
   const fromFlags = (): WizardAnswers => ({
     submitter: flags.submitter!.trim(),

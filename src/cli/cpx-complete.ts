@@ -19,7 +19,7 @@ import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-const SUBCOMMANDS = ['list', 'ls', 'status', 'upload', 'config', 'normalize', 'completion'];
+const SUBCOMMANDS = ['list', 'ls', 'status', 'upload', 'config', 'completion'];
 const AGENT_CMDS = ['claude', 'opencode', 'codex', 'cannbot'];
 const PROFILES = ['claude', 'opencode', 'cannbot', 'codex', 'openai', 'generic'];
 const TOP_FLAGS = ['--agent', '--autoupload', '--help', '--version', '-h', '-v'];
@@ -85,7 +85,6 @@ export function completeCandidates(words: string[]): string[] {
       if (cur.startsWith('-')) return filterByPrefix(UPLOAD_FLAGS, cur);
       return filterByPrefix(listCaptureSids(), cur);
     }
-    if (first === 'normalize') return filterByPrefix(listCaptureSids(), cur);
     return [];
   }
 
@@ -119,7 +118,7 @@ function completionCall(bin: string): string {
 /**
  * 补全函数体：静态上下文（首词/profile/on-off/flag 表）在生成时从上方常量
  * 灌入 bash，纯内建执行零进程（TAB ~0ms，node 冷启 130ms 只付给真正需要
- * fs 扫描的 sid 场景）；动态分支（upload/normalize 的 sid）才起 node
+ * fs 扫描的 sid 场景）；动态分支（upload 的 sid）才起 node
  * bundle。语义与 completeCandidates 逐上下文对齐（含 agent 域静默）。
  */
 function completionBody(bin: string): string {

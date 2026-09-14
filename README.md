@@ -2,9 +2,7 @@
 
 ## 项目介绍
 
-LLM coding agent（Claude Code / opencode / CANNBot / Codex …）正在成为日常开发的主力工具，但它们本质是一个**黑盒**：一次会话里 agent 发给模型的完整上下文是什么、system prompt 如何随轮次增长、注入了哪些 skills 和注册表、子代理各自消耗了多少 token、每一轮的真实延迟和首 token 时间——这些问题既看不全，也留不下来。token 账单在涨、上下文在膨胀、agent 行为难以复现，而现有的 agent 自身要么没有转录，要么转录粒度是"应用视角"而非"wire 视角"（丢失了真实的请求/响应形状）。
-
-**cannbot-proxy 的出发点就是补上这一层：在 agent 与模型 API 之间放一个透传捕获代理，把 wire 层发生的一切 verbatim 明文留存。**
+LLM coding agent（Claude Code / opencode / CANNBot / Codex …）本质是黑盒：发给模型的完整上下文、system prompt 的增长、注入的 skills、子代理的 token 消耗、每轮真实延迟——既看不全也留不下来，行为难以复现。cannbot-proxy 在 agent 与模型 API 之间放一个透传捕获代理，把 wire 层发生的一切 verbatim 明文留存。
 
 ```
 agent 子进程 ──HTTP──▶ cpx（per-session proxy）──透传──▶ 真实 upstream 模型 API
@@ -13,20 +11,7 @@ agent 子进程 ──HTTP──▶ cpx（per-session proxy）──透传──
                 ~/.cannbot-insight/proxy/cpx-<sid>.jsonl   ← 明文存档（单一事实源）
 ```
 
-**要解决的问题**
-
-- **看不见**：agent 与模型的交互无完整转录，上下文构成（system / memory / skills / 工具定义 / 历史消息）只能事后推测
-- **留不住**：agent 自身的会话存储（opencode.db、claude projects jsonl）格式各异、粒度不一，且不受用户控制
-- **信不过**：诊断"这轮为什么这么慢 / 这么贵"、"子代理到底拿了多少上下文"缺乏 wire 级证据
-
-**项目定位**
-
-- **wire 级明文存档**：逐字节捕获真实请求与响应（含 SSE 流重组后的完整内容），会话结束即得到一份可审计、可复现、可离线分析的单文件事实源
-- **观测管线的采集端**：作为 [cannbot-insight](../insight) 的数据来源——捕获文件是扩展 claude-format JSONL，insight 的 claude-jsonl adapter 零改动即可消费，进入 10 tab 的 session 维度分析（轮次 / 上下文构成 / token / 延迟 / 子代理桥接 / Full Context）
-- **纯透传、不干预**：只捕获不路由不做 model 映射——转发给上游的请求与没有 cpx 时逐字节一致，对 agent 功能零风险
-- **框架中立**：三种 wire 协议（Anthropic Messages / OpenAI Chat Completions / OpenAI Responses）、四类 agent（claude / opencode / cannbot / codex）产出**同一格式契约**，一个消费端吃下全部
-
-一句话愿景：**让每一次 agent↔模型的对话都有一份完整、干净（无密钥）、可随时重放的 wire 级档案。**
+定位：**wire 级明文存档**——逐字节捕获真实请求与响应（含 SSE 重组），会话结束得到可审计、可复现、可离线分析的单文件事实源；作为 [cannbot-insight](../insight) 的采集端（扩展 claude-format JSONL，insight 零改动消费）；纯透传不干预（转发与无 cpx 时逐字节一致）；框架中立（三协议四框架同一格式契约）。
 
 ## 项目优势
 
@@ -34,13 +19,12 @@ agent 子进程 ──HTTP──▶ cpx（per-session proxy）──透传──
 - **捕获独立于 insight**：不需要 cannbot-insight 在运行；insight 在跑则捕获退出时自动导入并开浏览器，否则保留捕获文件待 insight Web UI 导入
 - **零残留注入**：override 只活在 cpx 起的那个进程里（claude `--settings` / opencode `OPENCODE_CONFIG_CONTENT` / codex `-c`），退出即净，不碰任何全局配置
 - **三协议支持**：Anthropic Messages、OpenAI Chat Completions、OpenAI Responses API，各自独立的 emitter 与 SSE 重组器
-- **子代理捕获**：claude（`cc_is_subagent` + task-prompt 哈希）与 opencode（`x-parent-session-id` 头）双路由，产物镜像 insight 原生 `subagents/` 发现约定
-- **多 provider 透明路由**：`strings` 扫描 opencode 二进制自动发现每个 provider 的真实 upstream（dashscope / bigmodel / …），按 `/<providerId>/` 路径前缀精确转发；自定义 provider（`~/.config/opencode/opencode.json[c]` 的 `provider` 段，如私有 AI 网关）从配置本体发现并解析 upstream
+- **子代理捕获**：claude / opencode 双路由，产物对齐 insight 原生 `subagents/` 布局
+- **多 provider 透明路由**：自动发现 opencode 各 provider 的真实 upstream（二进制扫描 + 配置），按 `/<providerId>/` 前缀精确转发
 - **CANNBay 一键归档（直传，无需 insight）**：`cpx <agent> --autoupload` 会话结束自动上传 CANNBay 数据之仓（治理清洗 / LFS 免疫内建，staging 直取捕获文件）；`cpx upload <sid>` 随时补传
 - **Tab 补全安装即用**：npm 安装与 install.sh 自动装配 bash/zsh 补全（sid 动态补全、静态上下文零进程 ~3ms），无需任何手动启用
 - **密钥永不落盘**：所有落盘数据经过 `redactor` 唯一咽喉清洗（结构层键名 + 字符串层厂家键形），已真机双链路验证 0 泄漏
-- **gzip at rest**：会话进行中明文追加（`tail -F` 可看），会话关闭自动压缩，resume 自动解压续捕
-- **注入压缩（dedup，默认关闭）**：claude-code 每轮重注入的相同注册表/skills 清单替换为 `[已压缩]` 标记；只压捕获记录，不改动转发给上游的请求
+- **gzip at rest**：进行中明文追加（`tail -F` 可看），退出自动压缩，resume 自动解压续捕；**注入压缩**（dedup，默认关）：重注入的相同清单压成标记，只压捕获不改转发
 
 ## 安装
 
@@ -121,19 +105,49 @@ cpx status                                   # proxy 进程状态 + 最近捕获
 **常用进阶**
 
 ```bash
-cpx claude --autoupload         # 会话结束自动导入并上传 CANNBay（向导收集提交人/范式目录，连按回车即成）
-cpx upload                      # 补传最新会话到 CANNBay（缺省 sid = mtime 最新；cpx upload <TAB> 动态补 sid）
-cpx upload <sid> --submitter 张三 --category agent-sift   # 非交互补传（脚本/管道场景）
+cpx claude --autoupload         # 会话结束无感上传 CANNBay（零交互：提交人=git 用户名、目录=others）
+cpx upload                      # 补传最新会话（零参数同走默认；cpx upload <TAB> 动态补 sid）
+cpx upload <sid> --category agent-sift   # 精确分类（同 sid 换目录重传即原子迁移）
 cpx config dedup on            # 开启注入压缩（热生效，立即作用于进行中的会话）
 cpx status --kill              # 清理无 sid 的孤儿 proxy 进程
-cpx normalize <sid>            # 手动重生成 norm/ 规范文件（兼容命令；退出路径已不再自动生成）
 ```
 
 **CANNBay 上传说明**
 
 - 上传链路（staging / 治理清洗 / LFS 免疫 / git push）内建在 cpx 内，**零 insight 依赖**；insight 在跑仅作增强（预填会话首问/模型并顺带导入）
-- 必选信息：**提交人**（默认取 `git config user.name`，非交互场景同样自动）与**范式目录**（默认数据之仓的动态白名单）；TTY 向导全项有默认值，非交互缺目录时报错**附带白名单**，一次重试即可自纠
 - 任一环节失败（governance 拒绝 / 网络错误）捕获保留本地零丢失，之后 `cpx upload <sid>` 补传
+
+**提交信息配置**
+
+上传时的提交信息按"显式参数 > 会话记忆（sidecar）> 自动默认"解析，零参数即可直传：
+
+| 字段 | 显式参数 | 自动默认 | 说明 |
+|------|----------|----------|------|
+| 提交人（必选） | `--submitter 张三` | `git config user.name`（回退 `$USER`） | 数据归责到人；一般无需指定 |
+| 范式目录（必选） | `--category agent-sift` | `others` | 数据之仓的顶层目录即范式注册表；显式指定的目录不存在时报错附完整白名单，一次重试自纠 |
+| 内容描述（可选） | `--desc "一句话总结"` | 会话首问（sidecar 记忆优先） | agent 收尾上传时自己填最准 |
+| 算子生成结果（可选） | `--opgen success` / `--opgen failure` | 缺省（cannbay 列表显示 —） | 仅算子生成类工作流需要 |
+
+使用示例：
+
+```bash
+# 零参数：提交人=git 用户名、目录=others、描述=会话首问 —— 无感直传
+cpx upload
+
+# 精确分类 + 自定义描述
+cpx upload <sid> --category agent-sift --desc "修复端口冲突"
+
+# 归位：传到 others 后想换到正确范式 —— 同 sid 换目录重传即原子迁移
+cpx upload <sid> --category opgen-corpus
+
+# 算子生成工作流收尾（agent 执行）
+cpx upload --desc "完成 XX 算子生成" --opgen success
+
+# 会话结束自动上传：参数同样适用（记忆进 sidecar，退出时复用）
+cpx claude --autoupload --category agent-sift --submitter 张三
+```
+
+会话记忆（sidecar）：每次上传成功后写 `cpx-<sid>.upload.json`——后续同会话的补传 / `--autoupload` 退出路径自动复用上次的信息；捕获无新增时静默跳过，有新增免交互重传终版替换
 
 **工作流自动上传（收尾片段）**
 
@@ -141,11 +155,9 @@ cpx normalize <sid>            # 手动重生成 norm/ 规范文件（兼容命�
 
 ```markdown
 ## 会话收尾（任务完成后必须执行）
-运行以下命令上传本次会话数据：
-cpx upload --desc "<一句话总结本任务做了什么、结果如何>"
+运行：cpx upload --desc "<一句话总结本任务做了什么、结果如何>"
 
-- 若本工作流指定了范式目录，追加 --category <目录>；未指定则首次执行会
-  报错并列出可选目录，从中选语义最匹配的一个重试一次
+- 范式目录默认 others；本工作流有明确归属时追加 --category <目录>
 - opgen 仅算子生成类工作流需要：追加 --opgen success 或 --opgen failure
 - 提交人自动取本机 git 用户名，无需填写
 ```
@@ -157,7 +169,7 @@ cpx upload --desc "<一句话总结本任务做了什么、结果如何>"
 
 **Tab 补全**
 
-安装即自动装配；手动修复用 `cpx completion bash|zsh --install`。生效范围：子命令与常见 agent 命令、保留参数、`cpx upload / normalize <TAB>` 动态补真实会话 sid、`--agent` 补 profile、`config dedup` 补 on/off；agent 命令之后的参数属于 agent 自己的域，cpx 不越界补全（TAB 静默）。
+安装即自动装配；手动修复用 `cpx completion bash|zsh --install`。生效范围：子命令与常见 agent 命令、保留参数、`cpx upload <TAB>` 动态补真实会话 sid、`--agent` 补 profile、`config dedup` 补 on/off；agent 命令之后的参数属于 agent 自己的域，cpx 不越界补全（TAB 静默）。
 
 **确认捕获没有破坏 agent**
 
@@ -171,11 +183,10 @@ cpx 对 agent 完全透明：转发请求与上游响应逐字节透传、密钥
 | `cpx <agent-cmd> --autoupload` | 会话结束自动导入并上传 CANNBay（六框架通用；TTY 向导收集必选信息） |
 | `cpx --agent <profile> -- <cmd>` | 显式指定 profile（`claude`/`opencode`/`cannbot`/`codex`/`openai`/`generic`） |
 | `cpx list` | 捕获会话清单：sid / 大小 / 框架 / 子代理数 / 压缩状态 |
-| `cpx upload [sid] [flags]` | 补传会话到 CANNBay（直传，无需 insight；缺省 sid = 最新捕获）。非交互 flags：`--submitter`/`--category` 必选，`--desc`/`--opgen success\|failure`/`--baseline` 可选 |
+| `cpx upload [sid] [flags]` | 补传会话到 CANNBay（直传，无需 insight；缺省 sid = 最新捕获，提交信息全默认可零参数直传，见「提交信息配置」） |
 | `cpx status [--kill [--all]]` | insight/proxy 进程状态 + 最近捕获 + 压缩率；`--kill` 清理孤儿 proxy，`--all` 连活跃会话一起清 |
 | `cpx config [dedup on\|off]` | 查看/配置注入压缩（默认 off，热生效，立即作用于进行中的会话） |
 | `cpx completion [bash\|zsh] [--install]` | 打印/安装 Tab 补全脚本（安装时已自动装配，此处为手动修复入口） |
-| `cpx normalize [<file\|sid>]` | 手动重生成 insight-native 规范文件（norm/，兼容命令）；缺省 = 全部捕获。退出路径已改为直读 verbatim 导入，norm/ 不再自动产出 |
 | `cpx --version \| -v` | 版本号 + 生效代码路径（多仓共存时确认当前副本）；版本源在 `src/version.ts` |
 
 > **cpx 保留参数**（任意位置被 cpx 拦截消费，绝不透传 agent）：`--agent` `--autoupload` `--submitter` `--category` `--desc` `--opgen` `--baseline`；其余参数原样转发给 agent。
@@ -189,18 +200,9 @@ cpx 对 agent 完全透明：转发请求与上游响应逐字节透传、密钥
 └── <sid>/subagents/          子代理 verbatim 捕获 + meta.json（toolUseId 桥接）
 ```
 
-insight 导入与长期 serving 均直读 verbatim（`.jsonl.gz` 透明解压、`cpx-` 前缀自动剥）；旧版本的 `norm/` 镜像层已退役（内容与 verbatim 逐行相同的冗余副本）——存量 norm/ 件不迁移不删除，`cpx normalize` 降级为兼容命令按需重生成。
+insight 导入与长期 serving 均直读 verbatim（`.jsonl.gz` 透明解压、`cpx-` 前缀自动剥）。旧版本的 `norm/` 镜像层已退役（与 verbatim 逐行相同的冗余副本，`cpx normalize` 命令已移除）——存量 norm/ 件不迁移不删除。
 
-每行是**扩展 claude-format**（claude 原生信封冻结：`type`/`timestamp`/`message`），扩展数据进带 `(schema, version)` 声明的 `x_cannbay` 命名空间（双轨期与 legacy 顶层字段 `source`/`system`/`tools`/`duration_ms` 等并存写，读方 x_cannbay 优先）：
-
-| schema | 内容 |
-|--------|------|
-| `cc-wire-round` | assistant 行：roundIndex / requestParams / latencyMs / ttftMs / stopReason / status / protocol |
-| `cc-wire-input` | user/system 行：roundIndex + kind（user / tool-result / injection / command-message） |
-| `cc-session-meta` | 文件级：producer / framework / protocol / ccVersion |
-| `cc-subagent-meta` | 子代理文件级：toolUseId / name / agentType / subagentSessionId |
-
-格式契约详见上游仓 `docs/cannbay-schema-spec.md`。
+每行是**扩展 claude-format**：claude 原生信封（`type`/`timestamp`/`message`）冻结，扩展数据进带 `(schema, version)` 声明的 `x_cannbay` 命名空间——wire 轮次（latency/ttft/请求参数）、输入标记、会话 meta、子代理 meta。格式契约详见 `docs/cannbay-schema-spec.md`（上游仓）。
 
 ## 导入分析
 
@@ -211,13 +213,7 @@ insight 导入与长期 serving 均直读 verbatim（`.jsonl.gz` 透明解压、
 
 ## 密钥安全
 
-任何 API key / 凭据永不落盘：
-
-- headers 本就不落盘；清洗的是**内容级泄漏面**——body 里的键回显（`env` 输出、`cat settings.json`、对话粘贴）、URL query 带键（`?key=…`）、body 内鉴权字段、`Bearer` 凭据
-- 接入点是 `server.ts` 的 `dispatchEmit()`——所有落盘数据的唯一咽喉，一处拦截全覆盖
-- 结构层：敏感键名全等命中（`api_key` / `authorization` / `x-api-key` / …）→ 掩码
-- 字符串层：各厂家键形正则（`sk-ant-` / `sk-or-` / `sk-proj-` / `gsk_` / `AIza` / `xai-` / `GL-` / `LTAI` / 泛 `sk-`）、env 赋值回显、内嵌 JSON、URL query
-- 掩码形如 `前4…后4`（排障可辨厂家）；键名全等 + 长度阈值防误伤（`max_tokens`、`input_tokens` 等永不中弹）
+API key / 凭据永不落盘。headers 本就不落盘；清洗的是**内容级泄漏面**——对话内容里的键回显（`env` 输出、粘贴的配置）、URL query 带键、`Bearer` 凭据等，在唯一落盘咽喉 `dispatchEmit()` 统一打码（`前4…后4`，排障可辨厂家）；敏感键名全等 + 厂家键形正则双识别，`max_tokens` 等正常字段零误伤。
 
 ## 配置
 
@@ -263,7 +259,6 @@ insight 导入与长期 serving 均直读 verbatim（`.jsonl.gz` 透明解压、
 │   ├── redactor.ts          # 密钥清洗
 │   ├── opencode-context-parser.ts # opencode system 三段解析（独立工具）
 │   ├── types.ts
-│   └── normalize/           # 规范层（布局归一，幂等）
 └── tests/                   # 自包含测试（vitest，无 insight/Prisma 依赖）
 ```
 
@@ -281,7 +276,6 @@ proxy 测试自包含：只验证 emitter/writer/redactor 等模块的 JSON 输�
 - **三个 emitter 互不复用转换逻辑**：三种 wire 格式在所有相关维度上都不同，独立实现保持框架真隔离；仅共享中立基础设施（writer / reassembler）
 - **capture ≠ interpret**：jsonl 是单一数据源、可随时用新逻辑重解析（如 opencode system 三段拆分由独立 parser 拥有）
 - **先写盘后 `res.end()`**：防 agent 秒退 + cpx 杀 proxy 的竞态导致记录丢失
-- **normalize 只做布局归一**：norm/ = verbatim 行纯拷贝 + subagents 目录镜像，内容解释零重复（已退役出默认链路，`cpx normalize` 兼容命令保留；insight 直读 verbatim 导入）
 
 ## 已知边界
 
