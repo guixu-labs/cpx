@@ -201,18 +201,6 @@ describe('runUpload 直传链路', () => {
     expect(resolveSessionByEnv('no-such-pin', path.join(dir, 'iso4'))).toBeNull();
   });
 
-  it('★非交互缺 category：报错附白名单（agent 一次自纠）', async () => {
-    writeCapture('ses-white', { sub: 'iso5' });
-    const up = fakeUpload();
-    const o = outputs();
-    expect(await runUpload(['ses-white', '--submitter', '张三'], {
-      uploadImpl: up.uploadImpl, listDirsImpl: () => ['agent-sift', 'opgen-corpus'], isTTY: false, proxyDir: path.join(dir, 'iso5'),
-      fetchImpl: mockInsight({ down: true }).fetchImpl, ...o,
-    })).toBe(2);
-    expect(o.errs.join('\n')).toContain('agent-sift, opgen-corpus');
-    expect(up.payloads.length).toBe(0);
-  });
-
   it('insight 在跑：observe 命中预填 query/model，不再调 import-file', async () => {
     writeCapture('ses-prefill');
     const insight = mockInsight({ session: { query: '怎样配置端口？', model: 'glm-5.2' } });
@@ -236,22 +224,23 @@ describe('runUpload 直传链路', () => {
     expect(o.errs.join('\n')).not.toContain('上传中止');
   });
 
-  it('非交互缺必选 flag → 2 并指路（提交人由 git user.name 自动兜底，仅 category 缺）', async () => {
+  it('★零参数无感直传：范式目录默认 others、提交人走 git 兜底（不弹向导不报错）', async () => {
     writeCapture('ses-flags');
     const up = fakeUpload();
     const o = outputs();
-    expect(await runUpload(['ses-flags'], { uploadImpl: up.uploadImpl, listDirsImpl: () => ["agent-sift"], isTTY: false, defaultSubmitterImpl: () => '', ...o })).toBe(2);
-    const msg = o.errs.join('\n');
-    expect(msg).toContain('--submitter');
-    expect(msg).toContain('--category');
-    expect(up.payloads.length).toBe(0);
-    // 机器有 git user.name 时提交人自动补齐，只缺目录
+    expect(await runUpload(['ses-flags'], { uploadImpl: up.uploadImpl, listDirsImpl: () => ['agent-sift', 'others'], isTTY: false, defaultSubmitterImpl: () => 'dbz', ...o })).toBe(0);
+    expect(up.payloads.length).toBe(1);
+    expect(up.payloads[0].category).toBe('others');
+    expect(String(up.payloads[0].description).startsWith('提交人: dbz\n')).toBe(true);
+    expect(o.errs.join('\n')).toContain('默认 others');
+    // 无 git 用户且非交互：仅提交人缺失才报错（目录已默认；换 sid 避开上一段的 sidecar 记忆）
+    writeCapture('ses-nosub');
     const o2 = outputs();
-    expect(await runUpload(['ses-flags'], { uploadImpl: up.uploadImpl, listDirsImpl: () => ["agent-sift"], isTTY: false, defaultSubmitterImpl: () => 'dbz', ...o2 })).toBe(2);
+    expect(await runUpload(['ses-nosub'], { uploadImpl: up.uploadImpl, listDirsImpl: () => ['others'], isTTY: false, defaultSubmitterImpl: () => '', ...o2 })).toBe(2);
     const msg2 = o2.errs.join('\n');
-    expect(msg2).not.toContain('--submitter');
-    expect(msg2).toContain('--category');
-    expect(msg2).toContain('agent-sift');
+    expect(msg2).toContain('非交互环境缺少必选信息: --submitter（或用交互模式）');
+    expect(msg2).not.toContain('必选信息: --submitter（或用交互模式）、--category');
+    expect(up.payloads.length).toBe(1);
   });
 
   it('governance 拒绝 → 1 原因透传；git 错误日志脱敏（凭据 URL 不外泄）', async () => {
@@ -290,18 +279,16 @@ describe('TTY 向导（脚本化应答）', () => {
     const a = await promptUploadInfo(rl as any, {} as UploadFlags, ['agent-sift'], '', '');
     expect(a.submitter).toBe('最终名字');
   });
-  it('向导路径接入 runUpload：insight down + flag 未给齐也可完成直传', async () => {
+  it('零 flag 默认链：insight down 也可无感直传（提交人=注入兜底、目录=others、opgen 走 flag）', async () => {
     writeCapture('ses-wizard');
     const up = fakeUpload();
     const o = outputs();
-    const answers = ['', '', 's', '', ''];
-    const rl = { question: async () => answers.shift() ?? '', close() {} };
-    const code = await runUpload(['ses-wizard'], {
-      fetchImpl: mockInsight({ down: true }).fetchImpl, uploadImpl: up.uploadImpl, listDirsImpl: () => ["agent-sift"], rl: rl as any, defaultSubmitterImpl: () => 'env-user', ...o,
+    const code = await runUpload(['ses-wizard', '--opgen', 'success'], {
+      fetchImpl: mockInsight({ down: true }).fetchImpl, uploadImpl: up.uploadImpl, listDirsImpl: () => ["agent-sift", "others"], defaultSubmitterImpl: () => 'env-user', ...o,
     });
     expect(code).toBe(0);
     expect(up.payloads[0].description.startsWith('提交人: env-user\n')).toBe(true);
-    expect(up.payloads[0].category).toBe('agent-sift');
+    expect(up.payloads[0].category).toBe('others');
     expect(up.payloads[0].opGen).toBe('success');
   });
 });

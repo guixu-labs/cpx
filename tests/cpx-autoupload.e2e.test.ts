@@ -44,8 +44,10 @@ beforeAll(async () => {
   execSync(`git init --bare -b main "${bare}"`, { stdio: 'pipe' });
   const seed = path.join(tmp, 'seed');
   fs.mkdirSync(path.join(seed, 'agent-sift'), { recursive: true });
+  fs.mkdirSync(path.join(seed, 'others'), { recursive: true });
   fs.writeFileSync(path.join(seed, '.gitattributes'), '*.gz filter=lfs\n');
   fs.writeFileSync(path.join(seed, 'agent-sift', '.gitkeep'), '');
+  fs.writeFileSync(path.join(seed, 'others', '.gitkeep'), '');
   execSync('git init -b main . && git -c user.name=s -c user.email=s@s add -A && git -c user.name=s -c user.email=s@s commit -qm i && git push -q "' + bare + '" main', { cwd: seed, stdio: 'pipe' });
 
   server = http.createServer((req, res) => {
@@ -184,13 +186,14 @@ describe('cpx <agent> --autoupload E2E（直传，真 bare 仓 + mock insight）
     expect(log).toContain('提交人: 李四');
   }, 180_000);
 
-  it('④ 缺必选 flag 的非交互 autoupload：指路补传，退出码仍 0（捕获优先）', async () => {
+  it('④ ★零参数无感 autoupload：默认 others 直传（不弹向导不报错，退出码 0）', async () => {
     const agent = writeFakeAgent('agent-hint');
     const r = await runCpx(agent, ['--autoupload']);
     expect(r.code).toBe(0);
-    expect(r.stderr).toContain('非交互环境缺少必选信息');
-    expect(r.stderr).toContain('cpx upload');
-    expect(r.stderr).not.toContain('✅ uploaded');
+    expect(r.stderr).toContain('默认 others');
+    expect(r.stderr).toContain('✅ uploaded');
+    const othersTree = bareTree('others');
+    expect(othersTree.find(f => /others\/[^/]+\/[^/]+\.jsonl\.gz$/.test(f))).toBeTruthy();
     const gz = fs.readdirSync(captureDir).filter(f => f.endsWith('.jsonl.gz'));
     expect(gz.length).toBeGreaterThanOrEqual(3);
   }, 180_000);

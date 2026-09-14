@@ -36,7 +36,7 @@ function writeCapture(sid: string, mtimeMs: number, plain = false): void {
 describe('completeCandidates 上下文', () => {
   it('首词：子命令 + agent 命令 + 顶层 flag；前缀过滤', () => {
     const all = completeCandidates(['cpx', '']);
-    for (const w of ['upload', 'list', 'status', 'config', 'normalize', 'completion', 'claude', 'opencode', '--agent', '--autoupload']) {
+    for (const w of ['upload', 'list', 'status', 'config', 'completion', 'claude', 'opencode', '--agent', '--autoupload']) {
       expect(all).toContain(w);
     }
     expect(completeCandidates(['cpx', 'up'])).toEqual(['upload']);
@@ -67,7 +67,6 @@ describe('completeCandidates 上下文', () => {
   });
 
   it('normalize：sid 候选；config：dedup → on/off；status：--kill/--all', () => {
-    expect(completeCandidates(['cpx', 'normalize', 'o'])).toEqual(['old-sid']);
     expect(completeCandidates(['cpx', 'config', ''])).toEqual(['dedup']);
     expect(completeCandidates(['cpx', 'config', 'dedup', ''])).toEqual(['on', 'off']);
     expect(completeCandidates(['cpx', 'status', '-'])).toEqual(['--kill', '--all']);
