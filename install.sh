@@ -102,4 +102,11 @@ chmod +x "$SCRIPT_DIR/cpx-cli"
 rm -f "$BINDIR/cpx"
 ln -sfn "$SCRIPT_DIR/cpx-cli" "$BINDIR/cpx"
 echo "[cpx-install] cpx installed → $BINDIR/cpx ✓"
+
+# 3) Tab 补全开箱即用（best-effort，绝不阻断安装）：与 npm 安装共用同一
+#    postinstall —— bash 写用户级 bash-completion 自动加载目录，zsh 用户
+#    装配 ~/.zfunc + fpath。
+if command -v node >/dev/null 2>&1 && [ -f "$SCRIPT_DIR/scripts/postinstall.mjs" ]; then
+  node "$SCRIPT_DIR/scripts/postinstall.mjs" || true
+fi
 echo '[cpx-install] 捕获无需 insight；`cpx list` 查看捕获清单，导入走 insight Web UI「Import Session → JSONL」（insight 在运行时捕获退出即自动导入）'

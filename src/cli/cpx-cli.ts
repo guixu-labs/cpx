@@ -17,6 +17,9 @@ import { sessionFilePath, sidsFilePath, resolveCapturePath, compressCaptureFile,
 import { VERSION, VERSION_DISPLAY } from '../version.ts';
 import { redactString } from '../redactor.ts';
 import { parseOpencodeProvider, readAuthProvidersFromFile, readCustomProvidersFromRoots, resolveProviderIds, opencodeConfigRoots } from './opencode-providers';
+import { runUpload } from './cpx-upload';
+import { parseArgs } from './cpx-args';
+import { runCompleteMain } from './cpx-complete';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -63,19 +66,30 @@ function runConfig(args: string[]): void {
 }
 const CLAUDE_SETTINGS = path.join(os.homedir(), '.claude', 'settings.json');
 const INSIGHT_PORT = 21025;
-const INSIGHT_BASE = `http://localhost:${INSIGHT_PORT}`;
+// 环境可覆写（IT 用 mock insight 走完整链路；不影响默认行为）
+const INSIGHT_BASE = process.env.CANNBOT_CPX_INSIGHT_BASE ?? `http://localhost:${INSIGHT_PORT}`;
 
 const USAGE = `cpx ${VERSION_DISPLAY} — agent↔模型明文捕获代理编排器
 
 用法：
   cpx <agent-cmd> [args...]              例: cpx claude / cpx codex / cpx cannbot
   cpx --agent <claude|opencode|cannbot|codex|openai|generic> -- <cmd> [args]
+  cpx <agent-cmd> --autoupload [args...] 会话结束自动导入并上传 CANNBay（六框架通用；
+                                         TTY 下向导收集提交人/范式目录，连按回车即成；
+                                         脚本场景补 --submitter/--category）
   cpx list                              列出全部捕获会话文件（按时间降序，只读）
   cpx status [--kill [--all]]            查看状态；--kill 清理无 sid 的孤儿 proxy，--all 连活跃会话一起清
   cpx config [dedup on|off]              查看/配置；dedup=注入压缩（默认 off，热生效，只压缩捕获记录不改转发）
+  cpx upload [sid] [flags]               补传会话到 CANNBay（直传，无需 insight；缺省 sid = 最新捕获）。
+                                         TTY 向导收集必选信息（提交人/范式目录，回车取默认）；脚本场景：
+                                         --submitter 名字 --category 范式 [--desc 描述] [--opgen success|failure] [--baseline]
   cpx normalize [<file.jsonl|sid>]       重新生成 insight-native 规范文件（norm/）；缺省 = 全部捕获
+  cpx completion [bash|zsh] [--install]  打印/安装 Tab 补全脚本（sid 动态补全；agent 命令之后不越界）
   cpx --version | -v                     版本号 + 生效代码路径（多仓共存时确认当前副本）
   cpx --help | -h                        本帮助
+
+cpx 保留参数（被 cpx 拦截消费，不透传 agent）：--agent --autoupload --submitter
+--category --desc --opgen --baseline；其余参数原样转发。
 
 在原有 claude / opencode 命令前加 cpx，其他使用完全无变化。捕获无需 insight：
 agent 退出后自动压缩 + 生成 norm/ 规范文件；insight 在运行则自动导入并开浏览器，
@@ -112,27 +126,6 @@ function readClaudeSettings(): ClaudeSettings {
   }
 }
 
-function parseArgs(argv: string[]): { profile: AgentProfile; agentCmd: string; agentArgs: string[] } {
-  const args = argv.slice(2);
-  let profile: AgentProfile | null = null;
-  let rest: string[] = [];
-  for (let i = 0; i < args.length; i++) {
-    if (args[i] === '--agent' && args[i + 1]) { profile = args[i + 1] as AgentProfile; i++; continue; }
-    rest.push(args[i]);
-  }
-  if (rest[0] === '--') rest = rest.slice(1);
-  const agentCmd = rest[0] ?? '';
-  const agentArgs = rest.slice(1);
-  if (!profile) {
-    const base = path.basename(agentCmd);
-    if (base === 'claude' || base === 'claude-code') profile = 'claude';
-    else if (base === 'opencode') profile = 'opencode';
-    else if (base === 'cannbot') profile = 'cannbot';
-    else if (base === 'codex') profile = 'codex';
-    else profile = 'generic';
-  }
-  return { profile: profile!, agentCmd, agentArgs };
-}
 
 // Fast single-shot probe (localhost connection-refused is instant) — used to
 // decide opportunistic import at capture exit and for the startup info line.
@@ -743,6 +736,15 @@ async function main(): Promise<void> {
     runConfig(process.argv.slice(3));
     return;
   }
+  if (sub === 'upload') {
+    process.exitCode = await runUpload(process.argv.slice(3));
+    return;
+  }
+  if (sub === 'completion' || sub === '__complete') {
+    // 补全引擎共用入口（与 dist/cpx-complete.mjs bundle 同一实现）
+    process.exitCode = runCompleteMain(process.argv.slice(2));
+    return;
+  }
   if (sub === 'list' || sub === 'ls') {
     runList();
     return;
@@ -772,7 +774,7 @@ async function main(): Promise<void> {
     }
     return;
   }
-  const { profile, agentCmd, agentArgs } = parseArgs(process.argv);
+  const { profile, agentCmd, agentArgs, uploadArgs, autoUpload } = parseArgs(process.argv);
   if (!agentCmd) {
     console.error(USAGE);
     process.exit(2);
@@ -874,6 +876,23 @@ async function main(): Promise<void> {
   }
   process.on('SIGINT', () => { cleanup(); process.exit(130); });
   process.on('SIGTERM', () => { cleanup(); process.exit(143); });
+  // 挂断后 stdout/stderr 指向已死 pty：后续任何日志写入收到 EIO —— 与 EPIPE
+  // 不同，Node 对 stdout 的 EIO 默认不忽略，会以 uncaught error 崩掉孤儿态收尾
+  // 流程（真实 pty 挂断复测发现：SIGHUP handler 自己的 log() 就足以触发）。
+  // 装 noop error 监听吞掉，保证压缩→导入全程不被日志写崩。
+  process.stdout?.on?.('error', () => {});
+  process.stderr?.on?.('error', () => {});
+  // SIGHUP = 终端/ssh 挂断（内核发给前台进程组，agent 也一并收到）。此前无
+  // handler → Node 默认裸死，零清理：捕获留明文、.sids/占位残留、永不压缩
+  // （实测 ses 9fd46cc3：ssh 掉线杀 cpx，孤儿 claude 后续退出无人收尾）。
+  // 修复：handler 只"不死"——main() 本就在 await agent 退出，挂断后：
+  //   - agent 随挂断而死 → child.on('exit') 立即触发 → 完整收尾（压缩→导入）
+  //   - agent 扛过挂断（claude bg-pty-host，断线可重连）→ cpx 同步存活陪跑，
+  //     会话继续捕获，agent 最终退出时（哪怕数小时后）仍走完整收尾——
+  //     不主动杀 agent，保住断线重连工作流。
+  process.on('SIGHUP', () => {
+    log('SIGHUP（终端/ssh 挂断）—— 存活等待 agent 退出后走完整收尾（压缩→导入）');
+  });
   process.on('exit', () => { try { killProxyGroup('SIGKILL'); } catch { /* */ } });
 
   log(`session: ${sid}`);
@@ -900,7 +919,9 @@ async function main(): Promise<void> {
 
   const child = spawn(agentCmd, [...extraArgs, ...agentArgs], {
     stdio: 'inherit',
-    env: { ...process.env, ...env },
+    // CPX_SESSION_ID：会话定位工牌——agent 及其 bash 工具子进程自动继承，
+    // 收尾时裸跑 `cpx upload` 即可精确命中本会话（并发机器不传错别人的）
+    env: { ...process.env, ...env, CPX_SESSION_ID: sid },
   });
 
   await new Promise<void>((resolve) => {
@@ -1013,6 +1034,17 @@ async function main(): Promise<void> {
   if (lastUrl) {
     log(`✅ imported → opening ${lastUrl}`);
     openBrowser(lastUrl);
+  }
+  // --autoupload：逐会话直传 CANNBay（零 insight 依赖）。复用 runUpload
+  // （直传 + TTY 向导 + governance 透传；insight 在跑仅增强预填/顺带导入）；
+  // 信息不全时 runUpload 自行指路（cpx upload <sid> 补传），捕获已在本地，
+  // 不因上传失败改退出码
+  if (autoUpload) {
+    for (const { sid: captureSid } of produced) {
+      log(`autoupload: ${captureSid}`);
+      const code = await runUpload([captureSid, ...uploadArgs]);
+      if (code !== 0) log(`autoupload 未完成（exit ${code}）—— 捕获保留本地，稍后可 cpx upload ${captureSid} 补传`);
+    }
   }
   process.exit(0);
 }

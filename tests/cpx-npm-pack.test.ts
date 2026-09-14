@@ -49,6 +49,7 @@ describe('npm publish readiness (cannbot-proxy)', () => {
       'src/cli/cpx-cli.ts',
       'src/server.ts',
       'src/version.ts',
+      'scripts/postinstall.mjs',
       'LICENSE',
       'docs/DESIGN.md',
       'CHANGELOG.md',

@@ -36,6 +36,8 @@ agent 子进程 ──HTTP──▶ cpx（per-session proxy）──透传──
 - **三协议支持**：Anthropic Messages、OpenAI Chat Completions、OpenAI Responses API，各自独立的 emitter 与 SSE 重组器
 - **子代理捕获**：claude（`cc_is_subagent` + task-prompt 哈希）与 opencode（`x-parent-session-id` 头）双路由，产物镜像 insight 原生 `subagents/` 发现约定
 - **多 provider 透明路由**：`strings` 扫描 opencode 二进制自动发现每个 provider 的真实 upstream（dashscope / bigmodel / …），按 `/<providerId>/` 路径前缀精确转发；自定义 provider（`~/.config/opencode/opencode.json[c]` 的 `provider` 段，如私有 AI 网关）从配置本体发现并解析 upstream
+- **CANNBay 一键归档（直传，无需 insight）**：`cpx <agent> --autoupload` 会话结束自动上传 CANNBay 数据之仓（治理清洗 / LFS 免疫内建，staging 直取捕获文件）；`cpx upload <sid>` 随时补传
+- **Tab 补全安装即用**：npm 安装与 install.sh 自动装配 bash/zsh 补全（sid 动态补全、静态上下文零进程 ~3ms），无需任何手动启用
 - **密钥永不落盘**：所有落盘数据经过 `redactor` 唯一咽喉清洗（结构层键名 + 字符串层厂家键形），已真机双链路验证 0 泄漏
 - **gzip at rest**：会话进行中明文追加（`tail -F` 可看），会话关闭自动压缩，resume 自动解压续捕
 - **注入压缩（dedup，默认关闭）**：claude-code 每轮重注入的相同注册表/skills 清单替换为 `[已压缩]` 标记；只压捕获记录，不改动转发给上游的请求
@@ -51,6 +53,8 @@ npm install -g cannbot-proxy
 cpx claude -p "用一句话介绍自己"    # 冒烟验证；国内网络可加 --registry=https://registry.npmmirror.com
 ```
 
+安装即自动装配 Tab 补全（bash 写入 `~/.local/share/bash-completion/completions/`；zsh 用户装配 `~/.zfunc/`），新开终端 `cpx <TAB>` 即可用。
+
 **方式二：源码安装**
 
 ```bash
@@ -58,11 +62,12 @@ git clone <本仓地址> && cd cannbot-proxy
 ./install.sh
 ```
 
-安装器幂等、可重跑，做三件事：
+安装器幂等、可重跑，做四件事：
 
 1. 安装依赖（`tsx` / `fzstd` / `undici` 到本仓 `node_modules`，独立于任何其他项目）
 2. 把 `cpx` 以 **symlink** 落到 PATH（`/usr/local/bin` → `~/.local/bin` → `~/bin` 择优；`CPX_BINDIR` 可覆盖）
 3. 必要时把 bin 目录写进 `~/.bashrc`（新开终端或 `source ~/.bashrc` 生效）
+4. 装配 Tab 补全（与 npm 安装共用同一 postinstall 逻辑，bash/zsh 自动检测）
 
 不想全局装也可以直接用 `./cpx-cli <agent-cmd>`。
 
@@ -116,10 +121,43 @@ cpx status                                   # proxy 进程状态 + 最近捕获
 **常用进阶**
 
 ```bash
+cpx claude --autoupload         # 会话结束自动导入并上传 CANNBay（向导收集提交人/范式目录，连按回车即成）
+cpx upload                      # 补传最新会话到 CANNBay（缺省 sid = mtime 最新；cpx upload <TAB> 动态补 sid）
+cpx upload <sid> --submitter 张三 --category agent-sift   # 非交互补传（脚本/管道场景）
 cpx config dedup on            # 开启注入压缩（热生效，立即作用于进行中的会话）
 cpx status --kill              # 清理无 sid 的孤儿 proxy 进程
 cpx normalize <sid>            # 手动重生成 norm/ 规范文件（兼容命令；退出路径已不再自动生成）
 ```
+
+**CANNBay 上传说明**
+
+- 上传链路（staging / 治理清洗 / LFS 免疫 / git push）内建在 cpx 内，**零 insight 依赖**；insight 在跑仅作增强（预填会话首问/模型并顺带导入）
+- 必选信息：**提交人**（默认取 `git config user.name`，非交互场景同样自动）与**范式目录**（默认数据之仓的动态白名单）；TTY 向导全项有默认值，非交互缺目录时报错**附带白名单**，一次重试即可自纠
+- 任一环节失败（governance 拒绝 / 网络错误）捕获保留本地零丢失，之后 `cpx upload <sid>` 补传
+
+**工作流自动上传（收尾片段）**
+
+面向 agent 编排工作流：用户零参数起会话（`cpx claude --autoupload`），工作流末尾加一段收尾约定，任务完成时 agent 自行执行上传——信息各归其位（提交人=机器 git 用户、描述=agent 自述、成败=agent 自报、范式目录=模板写死或白名单自选）。把下面片段加到工作流末尾即可：
+
+```markdown
+## 会话收尾（任务完成后必须执行）
+运行以下命令上传本次会话数据：
+cpx upload --desc "<一句话总结本任务做了什么、结果如何>"
+
+- 若本工作流指定了范式目录，追加 --category <目录>；未指定则首次执行会
+  报错并列出可选目录，从中选语义最匹配的一个重试一次
+- opgen 仅算子生成类工作流需要：追加 --opgen success 或 --opgen failure
+- 提交人自动取本机 git 用户名，无需填写
+```
+
+配套机制（全部自动，工作流作者无感）：
+
+- **会话工牌**：cpx 启动 agent 时注入 `CPX_SESSION_ID` 环境变量并沿进程树继承，agent 裸跑 `cpx upload` 即精确命中本会话（并发机器不传错别人的）；claude 等按真实 sid 落盘的框架经 `.sids` 清单自动换算
+- **上传记忆（sidecar）**：上传成功后写 `cpx-<sid>.upload.json`——退出时 `--autoupload` 复用记录免交互；捕获无新增（按解压后逻辑字节比较，明文/压缩态可比）则静默跳过；有新增自动重传终版替换快照版
+
+**Tab 补全**
+
+安装即自动装配；手动修复用 `cpx completion bash|zsh --install`。生效范围：子命令与常见 agent 命令、保留参数、`cpx upload / normalize <TAB>` 动态补真实会话 sid、`--agent` 补 profile、`config dedup` 补 on/off；agent 命令之后的参数属于 agent 自己的域，cpx 不越界补全（TAB 静默）。
 
 **确认捕获没有破坏 agent**
 
@@ -130,12 +168,17 @@ cpx 对 agent 完全透明：转发请求与上游响应逐字节透传、密钥
 | 命令 | 说明 |
 |------|------|
 | `cpx <agent-cmd> [args...]` | 拉起捕获栈并运行 agent（命令名自动识别 profile） |
+| `cpx <agent-cmd> --autoupload` | 会话结束自动导入并上传 CANNBay（六框架通用；TTY 向导收集必选信息） |
 | `cpx --agent <profile> -- <cmd>` | 显式指定 profile（`claude`/`opencode`/`cannbot`/`codex`/`openai`/`generic`） |
 | `cpx list` | 捕获会话清单：sid / 大小 / 框架 / 子代理数 / 压缩状态 |
+| `cpx upload [sid] [flags]` | 补传会话到 CANNBay（直传，无需 insight；缺省 sid = 最新捕获）。非交互 flags：`--submitter`/`--category` 必选，`--desc`/`--opgen success\|failure`/`--baseline` 可选 |
 | `cpx status [--kill [--all]]` | insight/proxy 进程状态 + 最近捕获 + 压缩率；`--kill` 清理孤儿 proxy，`--all` 连活跃会话一起清 |
 | `cpx config [dedup on\|off]` | 查看/配置注入压缩（默认 off，热生效，立即作用于进行中的会话） |
+| `cpx completion [bash\|zsh] [--install]` | 打印/安装 Tab 补全脚本（安装时已自动装配，此处为手动修复入口） |
 | `cpx normalize [<file\|sid>]` | 手动重生成 insight-native 规范文件（norm/，兼容命令）；缺省 = 全部捕获。退出路径已改为直读 verbatim 导入，norm/ 不再自动产出 |
 | `cpx --version \| -v` | 版本号 + 生效代码路径（多仓共存时确认当前副本）；版本源在 `src/version.ts` |
+
+> **cpx 保留参数**（任意位置被 cpx 拦截消费，绝不透传 agent）：`--agent` `--autoupload` `--submitter` `--category` `--desc` `--opgen` `--baseline`；其余参数原样转发给 agent。
 
 ## 数据落点与格式
 
@@ -184,6 +227,7 @@ insight 导入与长期 serving 均直读 verbatim（`.jsonl.gz` 透明解压、
 |------|------|------|
 | `CANNBOT_PROXY_DIR` | `~/.cannbot-insight/proxy` | 捕获目录 |
 | `CANNBOT_PROXY_OPENAI_UPSTREAM` | `https://api.openai.com` | 二进制扫描不到的 provider 的兜底 upstream |
+| `CANNBOT_CPX_INSIGHT_BASE` | `http://localhost:21025` | insight 服务地址（自动导入 / CANNBay 上传；测试用 mock insight 覆写） |
 | `HTTPS_PROXY` / `HTTP_PROXY` / `ALL_PROXY` | - | 用户 HTTP 代理（clash/v2ray 等），显式配置 undici ProxyAgent |
 
 运行时配置存于 `~/.cannbot-insight/cpx-config.json`（`cpx config` 管理）：目前仅 `dedupInjection`（注入压缩，默认关闭）。`CANNBOT_PROXY_*` 其余变量（PORT / SESSION_ID / PROVIDER_UPSTREAMS / …）由 cpx-cli 内部使用，无需手动设置。
@@ -192,7 +236,11 @@ insight 导入与长期 serving 均直读 verbatim（`.jsonl.gz` 透明解压、
 
 ```
 ├── cpx-cli                  # PATH wrapper（自解析位置，优先本仓 node_modules/.bin/tsx）
+├── bin/cpx.mjs              # npm bin 启动器（node --import tsx 起 TS 源码）
 ├── install.sh               # 独立安装器
+├── scripts/
+│   ├── postinstall.mjs      # 安装钩子：Tab 补全自动装配 + 热路径 bundle 预编译
+│   └── cpx-complete-main.ts # 补全引擎 bundle 入口（esbuild 打包目标）
 ├── docs/                    # 设计文档
 │   ├── DESIGN.md            #   总体设计（架构 / 决策 / 边界）
 │   ├── OPENCODE-DESIGN.md   #   opencode 适配（wire 实证 / provider 发现 / 前缀路由）
@@ -202,6 +250,9 @@ insight 导入与长期 serving 均直读 verbatim（`.jsonl.gz` 透明解压、
 ├── src/
 │   ├── server.ts            # 捕获代理 server（路由 / 透传 / tee / dispatchEmit 咽喉）
 │   ├── cli/cpx-cli.ts       # cpx 编排器（profile / 注入 / 退出路径）
+│   ├── cli/cpx-args.ts      # 参数解析（cpx 保留参数拦截，绝不透传 agent）
+│   ├── cli/cpx-upload.ts    # CANNBay 上传编排（cpx upload / --autoupload）
+│   ├── cli/cpx-complete.ts  # Tab 补全引擎（候选逻辑 / 脚本生成）
 │   ├── session-resolver.ts  # sid 归因（header > env pinned > 指纹）
 │   ├── stream-reassembler.ts# 三协议 SSE 重组器
 │   ├── request-body-decoder.ts # gzip/zstd 请求体解码

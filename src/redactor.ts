@@ -86,6 +86,23 @@ const STRING_RULES: Array<{ re: RegExp; build: (m: RegExpMatchArray) => string }
   },
 ];
 
+// 复检扫描（governance 复用）：对文本逐规则重跑字符串层规则，返回每条
+// 规则的命中片段（与清洗分离的第二遍扫描——清洗后掩码形态不会再命中，
+// 任何命中都是清洗未覆盖的形态，fail-closed 熔断依据）。cannbay/govern.ts
+// 与 insight 侧 scanResidue 消费同一份规则（单一真身，parity 锁定）
+export function matchStringRules(text: string): string[][] {
+  return STRING_RULES.map(rule => text.match(rule.re) ?? []);
+}
+
+// 结构层复检：敏感键名下仍是明文（非掩码形态）的值
+export function isSensitiveKeyName(key: string): boolean {
+  return isSensitiveKey(key);
+}
+
+export function looksMasked(v: string): boolean {
+  return v === '****' || v.includes('…');
+}
+
 export function redactString(text: string): string {
   let out = text;
   for (const rule of STRING_RULES) {
