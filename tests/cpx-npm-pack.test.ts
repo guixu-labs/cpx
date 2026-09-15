@@ -27,6 +27,15 @@ const lockJson = JSON.parse(fs.readFileSync(path.join(PKG_DIR, 'package-lock.jso
 
 interface PackFile { path: string; size: number }
 
+// npm ≤11 输出数组 [{files}]；npm ≥12 改为按包名索引的对象。两种格式归一成数组。
+function parsePackJson(stdout: string): Array<{ files: PackFile[] }> {
+  const parsed: unknown = JSON.parse(stdout);
+  const list = Array.isArray(parsed)
+    ? (parsed as Array<{ files?: PackFile[] }>)
+    : Object.values(parsed as Record<string, { files?: PackFile[] }>);
+  return list.map((e) => ({ files: e.files ?? [] }));
+}
+
 function packDryRun(): PackFile[] {
   const r = spawnSync('npm', ['pack', '--dry-run', '--json'], {
     cwd: PKG_DIR,
@@ -36,7 +45,7 @@ function packDryRun(): PackFile[] {
   if (r.status !== 0) {
     throw new Error(`npm pack --dry-run 失败:\n${r.stderr}\n${r.stdout}`);
   }
-  const parsed = JSON.parse(r.stdout) as Array<{ files: PackFile[] }>;
+  const parsed = parsePackJson(r.stdout);
   expect(parsed.length).toBe(1);
   return parsed[0].files;
 }
