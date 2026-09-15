@@ -24,7 +24,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-const PROXY_ROOT = path.resolve(__dirname, '..');
+const PROXY_ROOT = path.resolve(__dirname, '../../');
 const WRAPPER = path.join(PROXY_ROOT, 'cpx-cli');
 
 let TMP: string;

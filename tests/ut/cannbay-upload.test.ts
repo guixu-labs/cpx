@@ -29,7 +29,7 @@ import zlib from 'node:zlib';
 let tmp: string;
 let bare: string;
 let captures: string;
-let cannbay: typeof import('../src/cannbay');
+let cannbay: typeof import('../../src/cannbay');
 
 function git(cmd: string, cwd: string): string {
   return execSync(cmd, { cwd, stdio: 'pipe' }).toString();
@@ -53,7 +53,7 @@ beforeAll(async () => {
   process.env.CANNBAY2_PUSH_URL = bare;
   process.env.CANNBAY2_CPX_CACHE_DIR = path.join(tmp, 'cache');
   process.env.CANNBOT_PROXY_DIR = captures;
-  cannbay = await import('../src/cannbay');
+  cannbay = await import('../../src/cannbay');
 });
 
 function writeCapture(sid: string, opts: { governed?: boolean; plain?: boolean; dirty?: boolean; subagents?: string[] } = {}): void {

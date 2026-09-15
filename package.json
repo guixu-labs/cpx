@@ -21,7 +21,9 @@
     "postinstall": "node scripts/postinstall.mjs",
     "proxy": "tsx src/server.ts",
     "cpx-cli": "tsx src/cli/cpx-cli.ts",
-    "test": "vitest run"
+    "test": "vitest run tests/ut",
+    "test:e2e": "vitest run tests/e2e",
+    "test:all": "vitest run"
   },
   "dependencies": {
     "tsx": "^4.22.4",

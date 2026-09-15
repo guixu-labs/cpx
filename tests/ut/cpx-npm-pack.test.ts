@@ -17,10 +17,10 @@ import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { VERSION } from '../src/version.ts';
+import { VERSION } from '../../src/version.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const PKG_DIR = path.resolve(__dirname, '..');
+const PKG_DIR = path.resolve(__dirname, '../../');
 
 const pkgJson = JSON.parse(fs.readFileSync(path.join(PKG_DIR, 'package.json'), 'utf8'));
 const lockJson = JSON.parse(fs.readFileSync(path.join(PKG_DIR, 'package-lock.json'), 'utf8'));

@@ -16,8 +16,8 @@ import { describe, it, expect, beforeAll } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { emit } from '../src/opencode-emitter.ts';
-import { sessionFilePath, sessionMetaPath } from '../src/writer.ts';
+import { emit } from '../../src/opencode-emitter.ts';
+import { sessionFilePath, sessionMetaPath } from '../../src/writer.ts';
 
 const CB_SID = 'ses_cannbot_it_main';
 const OC_SID = 'ses_opencode_regression';

@@ -7,7 +7,7 @@
 // See LICENSE in the root of the software repository for the full text of the License.
 
 import { describe, it, expect } from 'vitest';
-import { createReassembler } from '../src/stream-reassembler.ts';
+import { createReassembler } from '../../src/stream-reassembler.ts';
 
 function sse(events: object[]): string {
   return events.map(e => `data: ${JSON.stringify(e)}\n\n`).join('') + 'data: [DONE]\n\n';

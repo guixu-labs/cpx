@@ -27,8 +27,8 @@ import {
   parseUploadArgs, buildUploadDescription, resolveCaptureTarget, resolveSessionByEnv, readMetaFramework,
   readUploadStash, writeUploadStash, captureBytes,
   runUpload, promptUploadInfo, type UploadFlags, type UploadDeps,
-} from '../src/cli/cpx-upload';
-import { GovernanceError } from '../src/cannbay/govern';
+} from '../../src/cli/cpx-upload';
+import { GovernanceError } from '../../src/cannbay/govern';
 
 let dir: string;
 

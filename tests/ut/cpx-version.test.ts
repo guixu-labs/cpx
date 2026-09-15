@@ -15,11 +15,11 @@ import { describe, it, expect } from 'vitest';
 import { spawnSync } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { VERSION } from '../src/version.ts';
+import { VERSION } from '../../src/version.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const WRAPPER = path.join(path.resolve(__dirname, '..'), 'cpx-cli');
-const PKG = path.resolve(__dirname, '..');
+const WRAPPER = path.join(path.resolve(__dirname, '../../'), 'cpx-cli');
+const PKG = path.resolve(__dirname, '../../');
 
 function runCpx(flag: string) {
   return spawnSync('bash', [WRAPPER, flag], { encoding: 'utf-8', timeout: 60_000 });

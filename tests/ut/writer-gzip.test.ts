@@ -19,7 +19,7 @@ import {
   compressCaptureFile,
   ensureWritableCapture,
   appendClaudeLine,
-} from '../src/writer.ts';
+} from '../../src/writer.ts';
 
 const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'cpx-gz-'));
 process.env.CANNBOT_PROXY_DIR = tmpRoot;

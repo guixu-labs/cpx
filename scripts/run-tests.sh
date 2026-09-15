@@ -42,4 +42,4 @@ if ! resolve_vitest; then
   resolve_vitest || { echo "vitest still missing after npm install" >&2; exit 1; }
 fi
 
-CANNBOT_TEST_SKIP_SLOW=1 "$VITEST" run
+CANNBOT_TEST_SKIP_SLOW=1 "$VITEST" run tests/ut
