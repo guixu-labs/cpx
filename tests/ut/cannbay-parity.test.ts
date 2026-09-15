@@ -18,14 +18,14 @@
 import { describe, it, expect } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
-import { governText } from '../src/cannbay/govern';
-import { extractSubmitter } from '../src/cannbay';
-import { LFS_NEUTRALIZE } from '../src/cannbay/mirror';
-import { envPushUrl } from '../src/cannbay/remote';
-import { governText as insightGovernText } from '../../insight/src/lib/cannbay2/governance';
+import { governText } from '../../src/cannbay/govern';
+import { extractSubmitter } from '../../src/cannbay';
+import { LFS_NEUTRALIZE } from '../../src/cannbay/mirror';
+import { envPushUrl } from '../../src/cannbay/remote';
+import { governText as insightGovernText } from '../../../insight/src/lib/cannbay2/governance';
 
-const INSIGHT_MIRROR = path.resolve(__dirname, '../../insight/src/lib/cannbay2/mirror.ts');
-const INSIGHT_INDEX = path.resolve(__dirname, '../../insight/src/lib/cannbay2/index.ts');
+const INSIGHT_MIRROR = path.resolve(__dirname, '../../../insight/src/lib/cannbay2/mirror.ts');
+const INSIGHT_INDEX = path.resolve(__dirname, '../../../insight/src/lib/cannbay2/index.ts');
 
 const DIRTY_CORPUS = [
   JSON.stringify({ type: 'user', message: { content: 'curl -H "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.auth.sig" https://x.io' } }),
@@ -71,7 +71,7 @@ describe('cannbay 受控双实现 parity（cpx ↔ insight）', () => {
       expect(m, `${file} 未找到 extractSubmitter`).toBeTruthy();
       return m![0].replace(/\s+/g, ' ');
     };
-    expect(body(path.resolve(__dirname, '../src/cannbay/index.ts'))).toBe(body(INSIGHT_INDEX));
+    expect(body(path.resolve(__dirname, '../../src/cannbay/index.ts'))).toBe(body(INSIGHT_INDEX));
     // 行为冒烟
     expect(extractSubmitter('提交人: 张三 内容描述: x').submitter).toBe('张三 内容描述: x'); // 同 insight：regex 吃到行尾，描述剥离在 parseCommitSubject 层
     expect(extractSubmitter('无标记').error).toContain('提交人不能为空');
@@ -79,7 +79,7 @@ describe('cannbay 受控双实现 parity（cpx ↔ insight）', () => {
 
   it('④ 内置 push 凭据同源（密文常量解码一致）', () => {
     const insightSrc = fs.readFileSync(
-      path.resolve(__dirname, '../../insight/src/lib/cannbay2/remote.ts'), 'utf8',
+      path.resolve(__dirname, '../../../insight/src/lib/cannbay2/remote.ts'), 'utf8',
     );
     const m = insightSrc.match(/CANNBAY2_PUSH_URL_ENCODED = '([A-Za-z0-9+/=]+)'/);
     expect(m).toBeTruthy();

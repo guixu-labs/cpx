@@ -16,8 +16,8 @@ import { describe, it, expect, beforeAll } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { emit } from '../src/opencode-emitter.ts';
-import { sessionFilePath } from '../src/writer.ts';
+import { emit } from '../../src/opencode-emitter.ts';
+import { sessionFilePath } from '../../src/writer.ts';
 
 const SID = 'sid-main';
 const FIXTURE = path.resolve(__dirname, 'data/opencode-wire-records.jsonl');

@@ -23,7 +23,7 @@ import {
   readCustomProvidersFromRoots,
   resolveProviderIds,
   parseOpencodeProvider,
-} from '../src/cli/opencode-providers';
+} from '../../src/cli/opencode-providers';
 
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'opencode-providers-test-'));
 

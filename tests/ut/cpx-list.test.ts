@@ -22,7 +22,7 @@ import os from 'node:os';
 import path from 'node:path';
 import zlib from 'node:zlib';
 
-const WRAPPER = path.join(path.resolve(__dirname, '..'), 'cpx-cli');
+const WRAPPER = path.join(path.resolve(__dirname, '../../'), 'cpx-cli');
 
 let dir: string;
 const T0 = Date.now() / 1000 - 3 * 3600;

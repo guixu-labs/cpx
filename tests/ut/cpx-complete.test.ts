@@ -17,9 +17,9 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import zlib from 'node:zlib';
-import { completeCandidates, listCaptureSids, bashScript, zshScript, runCompletion } from '../src/cli/cpx-complete';
+import { completeCandidates, listCaptureSids, bashScript, zshScript, runCompletion } from '../../src/cli/cpx-complete';
 
-const WRAPPER = path.join(path.resolve(__dirname, '..'), 'cpx-cli');
+const WRAPPER = path.join(path.resolve(__dirname, '../../'), 'cpx-cli');
 let dir: string;
 
 beforeAll(() => {
@@ -89,7 +89,7 @@ describe('completion 脚本与安装', () => {
     expect(bashScript()).toContain('words="list ls status upload'); // 静态表生成时内嵌（零进程路由）
     expect(zshScript()).toContain('bashcompinit');
     expect(zshScript()).toContain('__complete');
-    const bundle = path.join(path.resolve(__dirname, '..'), 'dist', 'cpx-complete.mjs');
+    const bundle = path.join(path.resolve(__dirname, '../../'), 'dist', 'cpx-complete.mjs');
     if (fs.existsSync(bundle)) {
       expect(bashScript()).toContain('cpx-complete.mjs');
       expect(bashScript()).toContain(`node "${bundle}"`);
@@ -124,14 +124,14 @@ describe('completion 脚本与安装', () => {
   });
   it('postinstall 冒烟：bash 用户装配用户级补全目录 + 热路径 bundle，退出码恒 0', () => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), 'cpx-postinst-'));
-    const r = spawnSync('node', [path.join(path.resolve(__dirname, '..'), 'scripts', 'postinstall.mjs')], {
+    const r = spawnSync('node', [path.join(path.resolve(__dirname, '../../'), 'scripts', 'postinstall.mjs')], {
       encoding: 'utf8', timeout: 60_000,
       env: { ...process.env, HOME: home, SHELL: '/bin/bash' },
     });
     expect(r.status).toBe(0);
     const installed = path.join(home, '.local', 'share', 'bash-completion', 'completions', 'cpx');
     expect(fs.existsSync(installed)).toBe(true);
-    const bundle = path.join(path.resolve(__dirname, '..'), 'dist', 'cpx-complete.mjs');
+    const bundle = path.join(path.resolve(__dirname, '../../'), 'dist', 'cpx-complete.mjs');
     if (fs.existsSync(bundle)) {
       const fast = spawnSync('node', [bundle, '__complete', 'cpx', 'up'], { encoding: 'utf8', timeout: 30_000 });
       expect(fast.stdout.trim()).toBe('upload');

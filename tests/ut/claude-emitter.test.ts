@@ -15,8 +15,8 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { emit, ccVersionFromSystem } from '../src/claude-emitter.ts';
-import { sessionFilePath } from '../src/writer.ts';
+import { emit, ccVersionFromSystem } from '../../src/claude-emitter.ts';
+import { sessionFilePath } from '../../src/writer.ts';
 
 const SID = 'cpx-claude-fmt';
 const FIXTURE = path.resolve(__dirname, 'data/cpx-claude-format.jsonl');
@@ -190,7 +190,7 @@ describe('claude-emitter: provenance marker', () => {
 
 describe('claude-emitter: marker keeps the original agent name', () => {
   it('openai protocol → opencode-proxy', async () => {
-    const { proxySourceMarker } = await import('../src/claude-emitter.ts');
+    const { proxySourceMarker } = await import('../../src/claude-emitter.ts');
     expect(proxySourceMarker('anthropic')).toBe('claude-proxy');
     expect(proxySourceMarker('openai')).toBe('opencode-proxy');
   });

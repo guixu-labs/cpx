@@ -10,7 +10,7 @@
 // x-claude-code-session-id on every request (verified against cc 2.1.234:
 // main, subagent, and title-gen requests all carry the MAIN session id).
 import { describe, it, expect } from 'vitest';
-import { resolveSession } from '../src/session-resolver.ts';
+import { resolveSession } from '../../src/session-resolver.ts';
 
 const hdr = (sid: string) => (_name: string) => sid;
 

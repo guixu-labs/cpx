@@ -15,10 +15,10 @@ import { describe, it, expect } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { maskSecret, redactString, redactInPlace, redactRecord } from '../src/redactor.ts';
-import { emit as claudeEmit } from '../src/claude-emitter.ts';
-import { sessionFilePath } from '../src/writer.ts';
-import type { ProxyRecord } from '../src/types.ts';
+import { maskSecret, redactString, redactInPlace, redactRecord } from '../../src/redactor.ts';
+import { emit as claudeEmit } from '../../src/claude-emitter.ts';
+import { sessionFilePath } from '../../src/writer.ts';
+import type { ProxyRecord } from '../../src/types.ts';
 
 const ANTHROPIC_KEY = 'sk-ant-api03-AbCdEf1234567890aBcDeF';
 const OPENAI_KEY = 'sk-proj-AbCdEf1234567890aBcDeF1234567890';

@@ -19,7 +19,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-const PROXY_DIR = path.resolve(__dirname, '..');
+const PROXY_DIR = path.resolve(__dirname, '../../');
 const INSTALL_SH = path.join(PROXY_DIR, 'install.sh');
 const REPO_WRAPPER = path.join(PROXY_DIR, 'cpx-cli');
 
