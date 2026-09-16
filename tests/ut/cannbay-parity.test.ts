@@ -21,7 +21,7 @@ import path from 'node:path';
 import { governText } from '../../src/cannbay/govern';
 import { extractSubmitter } from '../../src/cannbay';
 import { LFS_NEUTRALIZE } from '../../src/cannbay/mirror';
-import { envPushUrl } from '../../src/cannbay/remote';
+import { envPushUrl, resolveCannbayRemote } from '../../src/cannbay/remote';
 import { governText as insightGovernText } from '../../../insight/src/lib/cannbay2/governance';
 
 const INSIGHT_MIRROR = path.resolve(__dirname, '../../../insight/src/lib/cannbay2/mirror.ts');
@@ -77,12 +77,34 @@ describe('cannbay 受控双实现 parity（cpx ↔ insight）', () => {
     expect(extractSubmitter('无标记').error).toContain('提交人不能为空');
   });
 
-  it('④ 内置 push 凭据同源（密文常量解码一致）', () => {
+  it('④ 内置 push 凭据同源（密文常量解码一致；push URL 不再内嵌凭据）', () => {
     const insightSrc = fs.readFileSync(
       path.resolve(__dirname, '../../../insight/src/lib/cannbay2/remote.ts'), 'utf8',
     );
     const m = insightSrc.match(/CANNBAY2_PUSH_URL_ENCODED = '([A-Za-z0-9+/=]+)'/);
     expect(m).toBeTruthy();
     expect(envPushUrl()).toBe(Buffer.from(m![1], 'base64').toString());
+    // atomgit 拒"请求直带密码"的内嵌 URL（CH.00905401，2026-09-14 实测）→
+    // push 凭据改经 credential helper 的 401 挑战-应答通道：两侧 mirror 都
+    // 必须有 pushMirror（helper 脚本 + 继承链重置），remote 解析后 pushUrl
+    // 无凭据、auth 从密文常量提取
+    const cpxMirrorSrc = fs.readFileSync(path.resolve(__dirname, '../../src/cannbay/mirror.ts'), 'utf8');
+    const insightMirrorSrc = fs.readFileSync(INSIGHT_MIRROR, 'utf8');
+    for (const [name, src] of [['cpx', cpxMirrorSrc], ['insight', insightMirrorSrc]] as const) {
+      expect(src, `${name} mirror 缺 pushMirror`).toContain('export function pushMirror');
+      expect(src, `${name} pushMirror 未重置 credential.helper 继承链`).toContain('-c credential.helper= -c credential.helper=');
+      expect(src, `${name} pushMirror 凭据须走一次性 helper 脚本`).toContain('mkdtempSync');
+    }
+    const saved = process.env.CANNBAY2_PUSH_URL;
+    delete process.env.CANNBAY2_PUSH_URL;
+    try {
+      const r = resolveCannbayRemote();
+      expect(r.pushUrl).not.toMatch(/@/);
+      expect(r.pushUrl).toBe(r.pullUrl);
+      expect(r.pushAuth?.username).toBeTruthy();
+      expect(r.pushAuth?.password).toBeTruthy();
+    } finally {
+      if (saved !== undefined) process.env.CANNBAY2_PUSH_URL = saved;
+    }
   });
 });

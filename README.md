@@ -35,6 +35,7 @@ agent 子进程 ──HTTP──▶ cpx（per-session proxy）──透传──
 ```bash
 npm install -g cannbot-proxy
 cpx claude -p "用一句话介绍自己"    # 冒烟验证；国内网络可加 --registry=https://registry.npmmirror.com
+npm install -g context-cpx        # 同一工具的 Context 品牌变体（命令仍为 cpx，捕获目录 ~/.context-insight/proxy，与 cannbot-proxy 同 bin 名不可同机共装）
 ```
 
 安装即自动装配 Tab 补全（bash 写入 `~/.local/share/bash-completion/completions/`；zsh 用户装配 `~/.zfunc/`），新开终端 `cpx <TAB>` 即可用。
@@ -116,6 +117,18 @@ cpx status --kill              # 清理无 sid 的孤儿 proxy 进程
 
 - 上传链路（staging / 治理清洗 / LFS 免疫 / git push）内建在 cpx 内，**零 insight 依赖**；insight 在跑仅作增强（预填会话首问/模型并顺带导入）
 - 任一环节失败（governance 拒绝 / 网络错误）捕获保留本地零丢失，之后 `cpx upload <sid>` 补传
+
+**LFS 模式（数据仓配额不够时）**
+
+默认 `.jsonl.gz` 以普通 git blob 出仓（受平台 git 仓配额钳制，atomgit 实测单仓 1GiB 硬限、单文件 100MiB）。数据仓在平台侧启用 LFS 后，设置 env 即切换为 LFS 指针出仓——实体进 LFS 存储，**容量脱离 git 仓配额**：
+
+```bash
+export CANNBAY2_LFS=1                     # opt-in：治理/范式/baseline/幂等全部不变
+export CANNBAY2_MAX_SESSION_MB=200        # 可选：放宽单会话上限（默认 100MB）
+cpx upload <sid> --category agent-sift
+```
+
+要求：客户机安装 [git-lfs](https://git-lfs.github.com) 且在 PATH（缺失时明确报错指路）；镜像内自动配置仓级 filter + pre-push 钩子，不碰全局配置。注意 LFS 存储的平台配额另行计算（atomgit 个人版 LFS 需在项目设置开启，未开启时 push 会报 `project lfs not enabled`）。
 
 **提交信息配置**
 
@@ -236,7 +249,8 @@ API key / 凭据永不落盘。headers 本就不落盘；清洗的是**内容级
 ├── install.sh               # 独立安装器
 ├── scripts/
 │   ├── postinstall.mjs      # 安装钩子：Tab 补全自动装配 + 热路径 bundle 预编译
-│   └── cpx-complete-main.ts # 补全引擎 bundle 入口（esbuild 打包目标）
+│   ├── cpx-complete-main.ts # 补全引擎 bundle 入口（esbuild 打包目标）
+│   └── pack-context.mjs     # context 品牌变体打包（staging 变换 + npm pack）
 ├── docs/                    # 设计文档
 │   ├── DESIGN.md            #   总体设计（架构 / 决策 / 边界）
 │   ├── OPENCODE-DESIGN.md   #   opencode 适配（wire 实证 / provider 发现 / 前缀路由）

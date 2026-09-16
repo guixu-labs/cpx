@@ -23,6 +23,14 @@ import { redactString, redactInPlace, matchStringRules, isSensitiveKeyName, look
 
 export const MAX_SESSION_BYTES = 100 * 1024 * 1024;
 
+/** 单会话大小上限（gzip 后字节）：默认 100MB，env CANNBAY2_MAX_SESSION_MB
+ *  可覆写（LFS 模式下平台限制在 LFS 对象侧，git blob 的 100MiB 钳制不再
+ *  适用；普通模式勿动——atomgit pre-receive 硬拒 100MiB 以上 blob）。 */
+export function maxSessionBytes(): number {
+  const v = Number(process.env.CANNBAY2_MAX_SESSION_MB);
+  return Number.isFinite(v) && v > 0 ? Math.floor(v * 1024 * 1024) : MAX_SESSION_BYTES;
+}
+
 export class GovernanceError extends Error {}
 
 interface CcSessionMeta {
@@ -113,14 +121,17 @@ export function governStagedSession(stagingDir: string, sid: string): void {
     throw new GovernanceError(`上传熔断：staging 存在白名单外文件（仅允许 .jsonl/.jsonl.gz/.json）：${unexpected.join(', ')}`);
   }
   const jsonlFiles = files.filter(f => f.endsWith('.jsonl') || f.endsWith('.jsonl.gz'));
-  const meta = readCcSessionMeta(path.join(sessionDir, `${sid}.jsonl.gz`));
+  // meta 伴生文件是 <sid>.meta.json（staging 必备）——此前误传 <sid>.jsonl.gz
+  // （gzip 二进制 JSON.parse 必败 → 快路径永假，governed 信任标记从未生效，
+  // 全量走慢路径解压重洗重压）
+  const meta = readCcSessionMeta(path.join(sessionDir, `${sid}.meta.json`));
   const fastPath = meta?.producer === 'cpx' && meta.governed === true
     && jsonlFiles.length > 0 && jsonlFiles.every(f => f.endsWith('.jsonl.gz'));
   if (fastPath) {
     let totalBytes = 0;
     for (const rel of jsonlFiles) totalBytes += fs.statSync(path.join(sessionDir, rel)).size;
-    if (totalBytes > MAX_SESSION_BYTES) {
-      throw new GovernanceError(`Session "${sid}" exceeds single-file size limit (${(totalBytes / 1024 / 1024).toFixed(1)}MB > 100MB)`);
+    if (totalBytes > maxSessionBytes()) {
+      throw new GovernanceError(`Session "${sid}" exceeds single-file size limit (${(totalBytes / 1024 / 1024).toFixed(1)}MB > ${(maxSessionBytes() / 1024 / 1024).toFixed(0)}MB)`);
     }
     return;
   }
@@ -147,7 +158,7 @@ export function governStagedSession(stagingDir: string, sid: string): void {
     fs.rmSync(file);
     totalBytes += fs.statSync(gzFile).size;
   }
-  if (totalBytes > MAX_SESSION_BYTES) {
-    throw new GovernanceError(`Session "${sid}" exceeds single-file size limit (${(totalBytes / 1024 / 1024).toFixed(1)}MB > 100MB，gzip 压缩后仍超限)`);
+  if (totalBytes > maxSessionBytes()) {
+    throw new GovernanceError(`Session "${sid}" exceeds single-file size limit (${(totalBytes / 1024 / 1024).toFixed(1)}MB > ${(maxSessionBytes() / 1024 / 1024).toFixed(0)}MB，gzip 压缩后仍超限)`);
   }
 }

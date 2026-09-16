@@ -13,9 +13,10 @@
 // strip、幂等 unchanged）——这里的 git 序列漂移即测试失败。归档轮转
 // （cannbay-archive planArchive）insight cannbay2 上传路径本就未接线，不移植。
 
-import { execSync } from 'node:child_process';
+import { execSync, spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import {
   resolveCannbayRemote, stripUrlCreds, escapeRegExp, type CannbayRemote,
@@ -27,8 +28,11 @@ import {
 // 操作对"装没装 git-lfs"完全不敏感
 export const LFS_NEUTRALIZE = '-c filter.lfs.process= -c filter.lfs.smudge=cat -c filter.lfs.clean=cat -c filter.lfs.required=false';
 
-export function runGit(cmd: string, cwd: string, timeoutMs = 120_000): Buffer {
-  const neutral = cmd.startsWith('git ')
+// raw = 跳过中和（LFS 模式的 add/push 专用：clean 过滤器要真跑出指针、
+// pre-push 钩子要真上传 LFS 对象）；其余命令保持中和（checkout 的 smudge=cat
+// 让既有 LFS 文件落指针文本——clean 对指针透传，re-add 不炸不重传）
+export function runGit(cmd: string, cwd: string, timeoutMs = 120_000, opts?: { raw?: boolean }): Buffer {
+  const neutral = !opts?.raw && cmd.startsWith('git ')
     ? `git ${LFS_NEUTRALIZE} ${cmd.slice('git '.length)}`
     : cmd;
   return execSync(neutral, { cwd, stdio: 'pipe', timeout: timeoutMs, maxBuffer: 256 * 1024 * 1024 });
@@ -208,6 +212,52 @@ async function withWriteLock<T>(fn: () => Promise<T>): Promise<T> {
   }
 }
 
+// ── LFS 模式（opt-in：remote.lfs，env CANNBAY2_LFS）─────────────────────
+
+export function hasGitLfs(): boolean {
+  try {
+    const r = spawnSync('git', ['lfs', 'version'], { stdio: 'pipe', timeout: 10_000 });
+    return r.status === 0;
+  } catch {
+    return false;
+  }
+}
+
+// git-lfs pre-push 钩子（与 `git lfs install` 写入的同款）：push 时上传
+// LFS 对象。手工写入而非调 `git lfs install`——后者会顺带改全局 gitconfig，
+// 库代码不该碰用户全局配置。
+const LFS_PRE_PUSH_HOOK = '#!/bin/sh\ncommand -v git-lfs >/dev/null 2>&1 || { echo "git-lfs not installed"; exit 2; }\ngit lfs pre-push "$@"\n';
+
+/** 镜像内 LFS 就绪：fail-fast git-lfs 在机检查 + 仓级 filter 配置 + pre-push
+ *  钩子。幂等；不触碰全局配置（仓级配置优先级高于全局，双保险）。 */
+export function ensureLfsReady(dir: string): void {
+  if (!hasGitLfs()) {
+    throw new Error('LFS 模式需要 git-lfs（`git lfs version` 不可用）：请安装 git-lfs 并确保其在 PATH 中（https://git-lfs.github.com），或去掉 CANNBAY2_LFS 走普通 git 存储');
+  }
+  runGit('git config filter.lfs.process "git-lfs filter-process"', dir, 10_000, { raw: true });
+  runGit('git config filter.lfs.smudge "git-lfs smudge -- %f"', dir, 10_000, { raw: true });
+  runGit('git config filter.lfs.clean "git-lfs clean -- %f"', dir, 10_000, { raw: true });
+  runGit('git config filter.lfs.required true', dir, 10_000, { raw: true });
+  const hook = path.join(dir, '.git', 'hooks', 'pre-push');
+  if (!fs.existsSync(hook)) {
+    fs.mkdirSync(path.dirname(hook), { recursive: true });
+    fs.writeFileSync(hook, LFS_PRE_PUSH_HOOK, { mode: 0o755 });
+  }
+}
+
+// LFS 模式下确保 .gitattributes 声明 *.gz 走 LFS（缺行补一行，与默认模式
+// 的"剔除 lfs 行"互为镜像操作；模板仓自带该行则零改动）
+function ensureLfsGitattributes(dir: string): void {
+  const gaPath = path.join(dir, '.gitattributes');
+  const want = '*.gz filter=lfs diff=lfs merge=lfs -text';
+  let cur = '';
+  try { cur = fs.readFileSync(gaPath, 'utf8'); } catch { /* 无文件 */ }
+  if (!/^\*\.gz\s+filter=lfs/m.test(cur)) {
+    fs.writeFileSync(gaPath, cur ? cur.replace(/\n*$/, '\n') + want + '\n' : `${want}\n`);
+    runGit('git add .gitattributes', dir);
+  }
+}
+
 export interface UploadResult {
   folder: string;
   unchanged: boolean;
@@ -229,6 +279,8 @@ export async function uploadFolder(
     const targetRoot = category ?? remote.rootDir;
     const dir = ensureMirror(remote);
     if (!revParseMain(dir, remote)) throw new Error('cannbay mirror has no main branch');
+    // LFS 模式：镜像内就绪（git-lfs 检查 + filter 配置 + pre-push 钩子）
+    if (remote.lfs) ensureLfsReady(dir);
 
     const staleLocs = locateSessionLocations(dir, remote, sid)
       .filter(l => !(l.root === targetRoot && l.baseline === !!baseline));
@@ -264,7 +316,10 @@ export async function uploadFolder(
 
     let gitattributesFixed = false;
     const gaPath = path.join(dir, '.gitattributes');
-    if (fs.existsSync(gaPath)) {
+    if (remote.lfs) {
+      // LFS 模式：反向操作——确保 *.gz 声明走 LFS（缺则补），绝不剔除
+      ensureLfsGitattributes(dir);
+    } else if (fs.existsSync(gaPath)) {
       const ga = fs.readFileSync(gaPath, 'utf8');
       const fixed = ga.split('\n').filter(l => !l.includes('filter=lfs')).join('\n');
       if (fixed !== ga) {
@@ -275,7 +330,9 @@ export async function uploadFolder(
     }
 
     const addPaths = [targetRel, ...staleLocs.map(l => locationPath(l, sid)), ...swapPaths, ...(baseline ? [`${targetRoot}/baseline`] : [])];
-    runGit(`git add ${addPaths.join(' ')}`, dir);
+    // LFS 模式 add 不中和：clean 过滤器要把 .gz 转成 LFS 指针（对指针文本
+    // 透传，baseline 搬移的 re-add 不重传）
+    runGit(`git add ${addPaths.join(' ')}`, dir, 120_000, remote.lfs ? { raw: true } : undefined);
     const msgFile = path.join(dir, '_commit_msg.txt');
     fs.writeFileSync(msgFile, commitMessage);
     let unchanged = false;
@@ -292,7 +349,7 @@ export async function uploadFolder(
     try { fs.unlinkSync(msgFile); } catch { /* ignore */ }
 
     if (!unchanged) {
-      const push = () => { runGit(`git push --no-verify "${remote.pushUrl}" ${remote.branch}`, dir, 300_000); };
+      const push = () => { pushMirror(dir, remote); };
       try {
         push();
       } catch {
@@ -303,4 +360,45 @@ export async function uploadFolder(
     }
     return { folder: `${targetRel}/`, unchanged, gitattributesFixed };
   });
+}
+
+/**
+ * 401 挑战-应答式 push：pushUrl 一律无凭据，凭据经一次性 credential helper
+ * 供给——atomgit 网关已拒"请求直带密码"的内嵌 URL（proactive Basic 直接
+ * CH.00905401 拒绝；同凭据经 401 挑战后重试可通过，2026-09-14 实测）。
+ * helper 脚本只落 0700 临时目录、用后即删，凭据不进命令行（execSync 失败
+ * 消息不含凭据）。`-c credential.helper=` 先清空继承链（全局 store 等），
+ * 保证显式凭据确定性生效。pushAuth=null（本地 bare / 匿名推）直推。
+ * LFS 模式：不用 --no-verify（pre-push 钩子 = LFS 对象上传通道，跳过即
+ * 产生孤儿指针）；helper 的 -c 配置经 GIT_CONFIG_PARAMETERS 传给钩子，
+ * git-lfs 的 batch API 鉴权与 git push 同源。
+ */
+export function pushMirror(dir: string, remote: CannbayRemote): void {
+  const verify = remote.lfs ? '' : ' --no-verify';
+  const raw = remote.lfs ? { raw: true as const } : undefined;
+  if (!remote.pushAuth) {
+    runGit(`git push${verify} "${remote.pushUrl}" ${remote.branch}`, dir, 300_000, raw);
+    return;
+  }
+  const { username, password } = remote.pushAuth;
+  if (/[\r\n]/.test(username) || /[\r\n]/.test(password)) {
+    throw new Error('push 凭据含换行符（credential helper 协议非法）');
+  }
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'cpx-cannbay-auth-'));
+  try {
+    const helper = path.join(tmp, 'helper.sh');
+    fs.writeFileSync(
+      helper,
+      `#!/bin/sh\ncat <<'CPXEOF'\nusername=${username}\npassword=${password}\nCPXEOF\n`,
+      { mode: 0o700 },
+    );
+    runGit(
+      `git -c credential.helper= -c credential.helper="${helper}" push${verify} "${remote.pushUrl}" ${remote.branch}`,
+      dir,
+      300_000,
+      raw,
+    );
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
 }

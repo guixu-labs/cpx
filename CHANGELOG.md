@@ -2,6 +2,13 @@
 
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 
+## [v0.1.4] - 2026-09-16
+
+### Added
+- 【双名发布：context 品牌变体（`context-cpx`，bin 保持 `cpx`）】同一源码仓、打包期品牌变换——`scripts/pack-context.mjs`（机制与 insight 侧同构：dry-run 取清单 → staging 精确字面量替换（每规则 minHits 哨兵）→ staging 内 `npm pack`）。翻转面：捕获/缓存目录默认值 `~/.context-insight/proxy` 与 `~/.context-insight/cannbay-cache-cpx`（**与 context-insight 的数据目录配对**——其导入对话框默认路径才能命中）、`cpx status` 标签、**Bay 显示名（`CANNBay`/`CANNbay` 两种大小写形态均提进通用规则**——此前 `CANNBay` 只挂在 MD_RULES，src 里帮助文本/日志硬编码的大写 B 形态随白名单进成品不被替换；cpx 源码无仓 URL，可全局替换）与文档包名；保留面：`x_cannbay` 格式契约、`CANNBOT_PROXY_DIR`/`CANNBAY2_*` env 名、`cpx cannbot` 的 cannbot CLI 命令（外部产品）。注意与 cannbot-proxy 同 bin 名（`cpx`），同机共装冲突——同一工具无需双装。发布：`node scripts/pack-context.mjs` → `npm publish .context-pack/context-cpx-<ver>.tgz`。IT：`tests/context-pack.test.ts`（package.json 断言 + 目录默认值翻转断言 + 品牌泄漏哨兵（**覆盖 `CANNbay`/`CANNBay` 两种形态**）+ 契约保留断言；cpx 无构建步骤，静态断言即运行时断言）
+- 【CANNBay 上传 LFS 模式（opt-in `CANNBAY2_LFS=1`）——容量脱离 git 仓配额】数据仓启用 LFS 后 `.jsonl.gz` 以 LFS 指针出仓（仓内 blob=指针文本，实体进 LFS 存储），数据量不再计入 atomgit git_repo 1GiB 硬配额（压测实测：普通 blob 2.1GiB 触顶硬拒，LFS 通道独立存储不受此限）。管线其余不变：治理/范式目录/baseline 交换/幂等 unchanged 全部照旧（幂等在指针级判定，clean 对指针文本透传——baseline 搬移的 re-add 不重传）。默认关闭（不设 env = 既有 LFS 免疫行为逐字节不变）。实现要点：镜像内手工写仓级 `filter.lfs.*` 配置 + pre-push 钩子（不调 `git lfs install`，不碰用户全局配置）；LFS 模式 add/push 跳过 filter 中和、push 不带 `--no-verify`（钩子=LFS 对象上传通道，跳过即孤儿指针）；`.gitattributes` 反向操作——确保 `*.gz filter=lfs` 声明存在（默认模式仍是剔除）；git-lfs 不在机 fail-fast 报安装指引。配套 `CANNBAY2_MAX_SESSION_MB` 覆写单会话大小限（默认 100MB=git blob 平台钳制；LFS 模式下可放宽——限制转移至 LFS 对象侧）。IT：本地 `file://` bare + git-lfs standalone 传输全链路（指针/实体/幂等/限值，`tests/cannbay-lfs.test.ts`，无 git-lfs 机器自动跳过）
+- 【治理快路径修复：`governed=true` 标记从未生效】`govern.ts` 把 `<sid>.jsonl.gz` 路径直接喂给只读纯 JSON 的 `readCcSessionMeta`（meta 实为 `<sid>.meta.json`）——快路径条件永假，所有 cpx 直传都走慢路径（解压→逐行清洗→重压，82MB 会话 ~38s 大半耗在此）。修复路径换算与 insight 侧同构（`.jsonl(.gz)` → `.meta.json`），带 `governed=true` 标记的压缩捕获恢复免解压直传（字节级信任，落盘 redactor 已全量清洗）
+
 ## [v0.1.3] - 2026-09-14
 
 ### Changed
