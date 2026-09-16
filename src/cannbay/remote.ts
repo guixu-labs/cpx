@@ -24,7 +24,10 @@ export function envPullUrl(): string {
   return process.env.CANNBAY2_REMOTE_URL ?? 'https://atomgit.com/duanbingzhe/cannbay3.git';
 }
 
-// 密文常量（与 insight cannbay2/remote.ts 同一枚，parity 测试锁同值）
+// 密文常量（与 insight cannbay2/remote.ts 同一枚，parity 测试锁同值）——
+// 解码 = https://<user>:<token>@atomgit.com/…。它是 push 凭据源（auth 提取），
+// 不再内嵌进 push URL：atomgit 已拒"请求直带密码"式鉴权，凭据只经
+// credential helper 的 401 挑战-应答通道供给（见 mirror.ts pushMirror）。
 const CANNBAY2_PUSH_URL_ENCODED = 'aHR0cHM6Ly9kdWFuYmluZ3poZTpvU1I1aTF3WXZ5dlZpUmdMbXdna3NDeG5AYXRvbWdpdC5jb20vZHVhbmJpbmd6aGUvY2FubmJheTMuZ2l0';
 
 export function envPushUrl(): string {
@@ -35,13 +38,42 @@ export function envBranch(): string {
   return process.env.CANNBAY2_BRANCH ?? 'main';
 }
 
+// LFS 模式（惰性读，与 env 三件套同款）：.jsonl.gz 以 LFS 指针出仓，实体
+// 进 LFS 存储——数据量不再计入 git 仓配额（atomgit git_repo 1GiB 硬限的
+// 出路）。要求客户机装 git-lfs（mirror.ts ensureLfsReady fail-fast）。
+export function envLfs(): boolean {
+  const v = process.env.CANNBAY2_LFS;
+  return v === '1' || v === 'true' || v === 'on';
+}
+
+export interface PushAuth {
+  username: string;
+  password: string;
+}
+
+/** https URL 内嵌凭据拆分：`scheme://user:pass@rest` → 无凭据 URL + auth 对；
+ * 无凭据（本地路径 / 匿名 URL）原样返回、auth=null。 */
+export function parseUrlCreds(url: string): { credless: string; auth: PushAuth | null } {
+  const m = url.match(/^(https?:\/\/)([^/@:\s]+):([^@\s]+)@/i);
+  if (!m) return { credless: url, auth: null };
+  return {
+    credless: url.slice(0, m[1].length) + url.slice(m[0].length),
+    auth: { username: decodeURIComponent(m[2]), password: decodeURIComponent(m[3]) },
+  };
+}
+
 export interface CannbayRemote {
   pullUrl: string;
+  /** 无凭据 push 地址：凭据走 credential helper（pushAuth），绝不内嵌 URL */
   pushUrl: string;
+  /** push 凭据（内置共享令牌 / env push URL 内嵌凭据解析而来）；null = 匿名推（本地 bare 等） */
+  pushAuth: PushAuth | null;
   branch: string;
   rootDir: string;
   cacheDir: string;
   paradigmRoots: boolean;
+  /** LFS 模式：.jsonl.gz 走 LFS 指针（env CANNBAY2_LFS；缺省 = 既有免疫行为） */
+  lfs?: boolean;
 }
 
 const FORBIDDEN_ADDRESS_CHARS = /["'`$;&|\n\r]/;
@@ -95,20 +127,23 @@ export function resolveCannbayRemote(): CannbayRemote {
     defaultCacheDir(),
     createHash('sha1').update(`${stripUrlCreds(credlessPull)}|${branch}`).digest('hex').slice(0, 12),
   );
+  const pushSource = envPushUrl().trim();
+  if (FORBIDDEN_ADDRESS_CHARS.test(pushSource)) throw new Error('数据湖 push 地址含非法字符');
+  const { credless: pushUrl, auth: pushAuth } = parseUrlCreds(pushSource);
   return {
     pullUrl: credlessPull,
-    pushUrl: envPushUrl(),
+    pushUrl,
+    pushAuth,
     branch,
     rootDir: 'sessions',
     cacheDir,
     paradigmRoots: true,
+    lfs: envLfs(),
   };
 }
 
 export function redactRemoteSecrets(message: string): string {
-  return message
-    .replace(envPushUrl(), '<push-url>')
-    .replace(/https:\/\/[^/\s"']+@/g, 'https://<creds>@');
+  return message.replace(/https:\/\/[^/\s"']+@/g, 'https://<creds>@');
 }
 
 export function ensureCacheParent(dir: string): void {

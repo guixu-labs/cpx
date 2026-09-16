@@ -165,3 +165,63 @@ describe('uploadCaptureSession 直传（真 bare 仓）', () => {
     expect(treeAt('origin/main', 'agent-sift/ses-base-a').length).toBeGreaterThan(0);
   });
 });
+
+describe('pushMirror（401 挑战-应答通道）', () => {
+  it('parseUrlCreds：内嵌凭据拆分 / 编码解码 / 无凭据与本地路径原样', async () => {
+    const { parseUrlCreds } = await import('../../src/cannbay/remote');
+    const a = parseUrlCreds('https://duanbingzhe:tok@atomgit.com/duanbingzhe/cannbay3.git');
+    expect(a.credless).toBe('https://atomgit.com/duanbingzhe/cannbay3.git');
+    expect(a.auth).toEqual({ username: 'duanbingzhe', password: 'tok' });
+    const b = parseUrlCreds('https://oauth2:tok%40x%3A@host/repo.git');
+    expect(b.auth).toEqual({ username: 'oauth2', password: 'tok@x:' });
+    expect(b.credless).toBe('https://host/repo.git');
+    const c = parseUrlCreds('https://atomgit.com/duanbingzhe/cannbay3.git');
+    expect(c.auth).toBeNull();
+    expect(c.credless).toBe('https://atomgit.com/duanbingzhe/cannbay3.git');
+    const d = parseUrlCreds('/tmp/cannbay-upload-it/cannbay.git');
+    expect(d.auth).toBeNull();
+    expect(d.credless).toBe('/tmp/cannbay-upload-it/cannbay.git');
+  });
+
+  it('pushAuth 存在：一次性 helper 构造/清理 + push 成功（本地 bare 传输不咨询凭据，锁命令构造与生命周期）', async () => {
+    const { pushMirror } = await import('../../src/cannbay/mirror');
+    const before = fs.readdirSync(os.tmpdir()).filter(n => n.startsWith('cpx-cannbay-auth-'));
+    const pmBare = path.join(tmp, 'pm-bare.git');
+    execSync(`git init --bare -b main "${pmBare}"`, { stdio: 'pipe' });
+    const work = path.join(tmp, 'pushmirror');
+    fs.mkdirSync(work, { recursive: true });
+    git('git init -b main .', work);
+    fs.writeFileSync(path.join(work, 'pm.txt'), 'x');
+    git('git -c user.name=t -c user.email=t@x add -A', work);
+    git('git -c user.name=t -c user.email=t@x commit -m pm', work);
+    const remote = {
+      pullUrl: pmBare, pushUrl: pmBare,
+      pushAuth: { username: 'it-user', password: 'it-pass' },
+      branch: 'main', rootDir: 'sessions', cacheDir: path.join(tmp, 'pm-cache'), paradigmRoots: true,
+    };
+    pushMirror(work, remote);
+    expect(git('git rev-parse main', pmBare).trim()).toBe(git('git rev-parse HEAD', work).trim());
+    const after = fs.readdirSync(os.tmpdir()).filter(n => n.startsWith('cpx-cannbay-auth-'));
+    expect(after).toEqual(before); // helper 临时目录用后即删
+
+    const noAuth = { ...remote, pushAuth: null };
+    fs.writeFileSync(path.join(work, 'pm2.txt'), 'y');
+    git('git -c user.name=t -c user.email=t@x add -A', work);
+    git('git -c user.name=t -c user.email=t@x commit -m pm2', work);
+    pushMirror(work, noAuth);
+    expect(git('git rev-parse main', pmBare).trim()).toBe(git('git rev-parse HEAD', work).trim());
+  });
+
+  it('pushAuth 含换行：helper 协议非法，立即拒绝且不落任何临时目录', async () => {
+    const { pushMirror } = await import('../../src/cannbay/mirror');
+    const before = fs.readdirSync(os.tmpdir()).filter(n => n.startsWith('cpx-cannbay-auth-'));
+    const remote = {
+      pullUrl: bare, pushUrl: bare,
+      pushAuth: { username: 'u', password: 'bad\npassword' },
+      branch: 'main', rootDir: 'sessions', cacheDir: path.join(tmp, 'pm-cache'), paradigmRoots: true,
+    };
+    expect(() => pushMirror(path.join(tmp, 'pushmirror'), remote)).toThrow('换行');
+    const after = fs.readdirSync(os.tmpdir()).filter(n => n.startsWith('cpx-cannbay-auth-'));
+    expect(after).toEqual(before);
+  });
+});
