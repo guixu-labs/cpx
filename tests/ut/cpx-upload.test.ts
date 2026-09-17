@@ -228,7 +228,9 @@ describe('runUpload 直传链路', () => {
     writeCapture('ses-flags');
     const up = fakeUpload();
     const o = outputs();
-    expect(await runUpload(['ses-flags'], { uploadImpl: up.uploadImpl, listDirsImpl: () => ['agent-sift', 'others'], isTTY: false, defaultSubmitterImpl: () => 'dbz', ...o })).toBe(0);
+    // fetchImpl 必须注入（insight down）：默认会落到真 fetch——开发机 insight
+    // 在跑时"机会主义导入"把测试夹具写进真实 dev.db（占位会话残留主页）
+    expect(await runUpload(['ses-flags'], { fetchImpl: mockInsight({ down: true }).fetchImpl, uploadImpl: up.uploadImpl, listDirsImpl: () => ['agent-sift', 'others'], isTTY: false, defaultSubmitterImpl: () => 'dbz', ...o })).toBe(0);
     expect(up.payloads.length).toBe(1);
     expect(up.payloads[0].category).toBe('others');
     expect(String(up.payloads[0].description).startsWith('提交人: dbz\n')).toBe(true);
@@ -236,7 +238,7 @@ describe('runUpload 直传链路', () => {
     // 无 git 用户且非交互：仅提交人缺失才报错（目录已默认；换 sid 避开上一段的 sidecar 记忆）
     writeCapture('ses-nosub');
     const o2 = outputs();
-    expect(await runUpload(['ses-nosub'], { uploadImpl: up.uploadImpl, listDirsImpl: () => ['others'], isTTY: false, defaultSubmitterImpl: () => '', ...o2 })).toBe(2);
+    expect(await runUpload(['ses-nosub'], { fetchImpl: mockInsight({ down: true }).fetchImpl, uploadImpl: up.uploadImpl, listDirsImpl: () => ['others'], isTTY: false, defaultSubmitterImpl: () => '', ...o2 })).toBe(2);
     const msg2 = o2.errs.join('\n');
     expect(msg2).toContain('非交互环境缺少必选信息: --submitter（或用交互模式）');
     expect(msg2).not.toContain('必选信息: --submitter（或用交互模式）、--category');

@@ -2,6 +2,11 @@
 
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 
+## [v0.1.5] - 2026-09-17
+
+### Fixed
+- 【cpx-upload 测试隔离】零参数直传用例漏注 `fetchImpl`，真 fetch 探测到开发机在跑的 insight 后机会主义导入把合成捕获写进真实 dev.db（主页残留 ses-flags/ses-nosub 占位会话）——补 `mockInsight(down)` 注入，测试不再依赖/污染环境
+
 ## [v0.1.4] - 2026-09-16
 
 ### Added
