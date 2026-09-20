@@ -79,7 +79,7 @@ captures dir : ~/.cannbot-insight/proxy
 
 ```bash
 cpx claude                      # 交互式（/exit 退出后自动压缩，insight 在运行则自动导入）
-cpx opencode                    # opencode（无 -m 时自动覆盖 auth.json 全部已登录 provider + opencode.json[c] 自定义 provider）
+cpx opencode                    # opencode（无 -m 时自动覆盖 auth.json 全部已登录 provider + 项目级/全局 opencode.json[c] 自定义 provider）
 cpx opencode run -m alibaba-cn/glm-5.2 "..."   # 或 -m 精确指定单个 provider
 cpx cannbot                     # CANNBot（opencode 系 CANN fork，内建 cannbot provider）
 cpx codex                       # Codex（ChatGPT 登录或 OPENAI_API_KEY 均可）

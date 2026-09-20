@@ -23,6 +23,8 @@ import {
   readCustomProvidersFromRoots,
   resolveProviderIds,
   parseOpencodeProvider,
+  opencodeProjectConfigRoots,
+  opencodeConfigRoots,
 } from '../../src/cli/opencode-providers';
 
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'opencode-providers-test-'));
@@ -109,6 +111,72 @@ describe('readCustomProvidersFromRoots', () => {
     fs.writeFileSync(path.join(root, 'opencode.json'), '{ broken json !!!');
     expect(readCustomProvidersFromRoots([root])).toEqual({});
     expect(readCustomProvidersFromRoots([path.join(TMP, 'no-such-root')])).toEqual({});
+  });
+});
+
+describe('opencodeProjectConfigRoots', () => {
+  it('cwd 向上到 git 根，逐层产出 <dir> 与 <dir>/.opencode（git 根本身计入）', () => {
+    const proj = path.join(TMP, 'proj-walk');
+    fs.mkdirSync(path.join(proj, '.git'), { recursive: true });
+    const sub = path.join(proj, 'a', 'b');
+    fs.mkdirSync(sub, { recursive: true });
+    expect(opencodeProjectConfigRoots(sub)).toEqual([
+      sub, path.join(sub, '.opencode'),
+      path.join(proj, 'a'), path.join(proj, 'a', '.opencode'),
+      proj, path.join(proj, '.opencode'),
+    ]);
+  });
+  it('无 .git 时逐层到文件系统根（不越界、不抛）', () => {
+    const leaf = path.join(TMP, 'no-git', 'x');
+    fs.mkdirSync(leaf, { recursive: true });
+    const roots = opencodeProjectConfigRoots(leaf);
+    // 首层 = leaf 与 leaf/.opencode；遍历覆盖到文件系统根层
+    expect(roots[0]).toBe(leaf);
+    expect(roots[1]).toBe(path.join(leaf, '.opencode'));
+    expect(roots).toContain(path.parse(leaf).root); // 文件系统根目录
+    expect(roots.length % 2).toBe(0); // 每层产出 <dir> 与 <dir>/.opencode 成对
+  });
+  it('项目级 .opencode/opencode.json 自定义 provider 被识别（客户现场 huoshan-ai-gateway）', () => {
+    const proj = path.join(TMP, 'proj-dot-opencode');
+    fs.mkdirSync(path.join(proj, '.git'), { recursive: true });
+    fs.mkdirSync(path.join(proj, '.opencode'), { recursive: true });
+    fs.writeFileSync(path.join(proj, '.opencode', 'opencode.json'), JSON.stringify({
+      provider: { 'huoshan-ai-gateway': { options: { baseURL: 'https://ark.cn-beijing.volces.com/api/v3' } } },
+    }));
+    expect(readCustomProvidersFromRoots(opencodeProjectConfigRoots(proj)))
+      .toEqual({ 'huoshan-ai-gateway': 'https://ark.cn-beijing.volces.com/api/v3' });
+  });
+  it('项目级 opencode.json（根级）与全局同名 provider 冲突时项目优先', () => {
+    const proj = path.join(TMP, 'proj-precedence');
+    const glob = path.join(TMP, 'glob-precedence');
+    fs.mkdirSync(path.join(proj, '.git'), { recursive: true });
+    fs.mkdirSync(path.join(glob, 'opencode'), { recursive: true });
+    fs.writeFileSync(path.join(proj, 'opencode.json'), JSON.stringify({
+      provider: { shared: { options: { baseURL: 'https://project.example.com/v1' } } },
+    }));
+    fs.writeFileSync(path.join(glob, 'opencode', 'opencode.json'), JSON.stringify({
+      provider: { shared: { options: { baseURL: 'https://global.example.com/v1' } } },
+    }));
+    const roots = [...opencodeProjectConfigRoots(proj), path.join(glob, 'opencode')];
+    expect(readCustomProvidersFromRoots(roots)).toEqual({
+      shared: 'https://project.example.com/v1',
+    });
+  });
+  it('opencodeConfigRoots 项目级配置根排在全局配置根之前', () => {
+    const proj = path.join(TMP, 'proj-order');
+    fs.mkdirSync(path.join(proj, '.git'), { recursive: true });
+    const spy = (process as unknown as { cwd: () => string }).cwd;
+    try {
+      (process as unknown as { cwd: () => string }).cwd = () => proj;
+      const roots = opencodeConfigRoots();
+      // 项目级（proj 与 proj/.opencode）在前，全局（cannbot/opencode）在后
+      expect(roots[0]).toBe(proj);
+      expect(roots[1]).toBe(path.join(proj, '.opencode'));
+      expect(roots.at(-2)).toMatch(/[\\/]cannbot$/);
+      expect(roots.at(-1)).toMatch(/[\\/]opencode$/);
+    } finally {
+      (process as unknown as { cwd: () => string }).cwd = spy;
+    }
   });
 });
 

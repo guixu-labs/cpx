@@ -16,6 +16,7 @@ import { sessionFilePath, sidsFilePath, resolveCapturePath, compressCaptureFile,
 import { VERSION, VERSION_DISPLAY } from '../version.ts';
 import { redactString } from '../redactor.ts';
 import { parseOpencodeProvider, readAuthProvidersFromFile, readCustomProvidersFromRoots, resolveProviderIds, opencodeConfigRoots } from './opencode-providers';
+import { resolveTsxLoader } from './tsx-launcher';
 import { runUpload } from './cpx-upload';
 import { parseArgs } from './cpx-args';
 import { runCompleteMain } from './cpx-complete';
@@ -24,7 +25,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const PROXY_PKG = path.resolve(__dirname, '..', '..');
 const PROXY_SERVER = path.join(PROXY_PKG, 'src', 'server.ts');
-const PROXY_TSX = path.join(PROXY_PKG, 'node_modules', '.bin', 'tsx');
+const TSX_LOADER = resolveTsxLoader(__filename);
 const PROXY_DIR = process.env.CANNBOT_PROXY_DIR ?? path.join(os.homedir(), '.cannbot-insight', 'proxy');
 const CPX_CONFIG_FILE = path.join(path.dirname(PROXY_DIR), 'cpx-config.json');
 
@@ -143,23 +144,27 @@ interface SessionProxy {
 
 function startSessionProxy(sid: string, anthropicUpstream: string, openaiUpstream: string, providerUpstreams: Record<string, string>): Promise<SessionProxy> {
   fs.mkdirSync(PROXY_DIR, { recursive: true });
-  // Prefer proxy's own tsx (standalone install — insight root node_modules may
-  // be absent); fall back to npx (resolves from cwd, then the registry).
-  const hasLocalTsx = fs.existsSync(PROXY_TSX);
+  // 会话代理以 node --import <tsx loader> 起 TS 源码：loader 从本文件位置标准
+  // 解析（bin/cpx.mjs 同款纪律——npm i -g 嵌套 / 用户项目安装 hoist 提升两布局
+  // 都命中，不再硬编码 <pkg>/node_modules/.bin/tsx——hoist 布局下该路径不存在，
+  // 回落 npx 会从 registry 现场下载 tsx，网络依赖且慢）；解析失败才回落 npx。
   return new Promise((resolve, reject) => {
-    const child = spawn(hasLocalTsx ? PROXY_TSX : 'npx', hasLocalTsx ? [PROXY_SERVER] : ['tsx', PROXY_SERVER], {
-      stdio: ['ignore', 'pipe', 'pipe'],
-      cwd: PROXY_PKG,
-      detached: true,
-      env: {
-        ...process.env,
-        CANNBOT_PROXY_PORT: '0',
-        CANNBOT_PROXY_SESSION_ID: sid,
-        CANNBOT_PROXY_ANTHROPIC_UPSTREAM: anthropicUpstream,
-        CANNBOT_PROXY_OPENAI_UPSTREAM: openaiUpstream,
-        CANNBOT_PROXY_PROVIDER_UPSTREAMS: JSON.stringify(providerUpstreams),
-      },
-    });
+    const child = spawn(
+      TSX_LOADER ? process.execPath : 'npx',
+      TSX_LOADER ? ['--import', TSX_LOADER, PROXY_SERVER] : ['tsx', PROXY_SERVER],
+      {
+        stdio: ['ignore', 'pipe', 'pipe'],
+        cwd: PROXY_PKG,
+        detached: true,
+        env: {
+          ...process.env,
+          CANNBOT_PROXY_PORT: '0',
+          CANNBOT_PROXY_SESSION_ID: sid,
+          CANNBOT_PROXY_ANTHROPIC_UPSTREAM: anthropicUpstream,
+          CANNBOT_PROXY_OPENAI_UPSTREAM: openaiUpstream,
+          CANNBOT_PROXY_PROVIDER_UPSTREAMS: JSON.stringify(providerUpstreams),
+        },
+      });
     let port = 0;
     const onPort = (p: number) => {
       if (port || !p) return;
@@ -796,7 +801,8 @@ async function main(): Promise<void> {
     log('opencode: no provider to override for capture.');
     log('  fix: pass `-m <provider>/<model>` (e.g. -m gateway/glm-5.3),');
     log('        or log into a provider first (`opencode providers login`) so cpx');
-    log('        can read its id from auth.json, or define the provider in');
+    log('        can read its id from auth.json, or define the provider in a');
+    log('        project config (opencode.json[c] / .opencode/opencode.json[c]) or');
     log('        ~/.config/opencode/opencode.json[c] (custom provider).');
     log('  (opencode ignores OPENAI_BASE_URL, so cpx cannot capture without an');
     log('   explicit OPENCODE_CONFIG_CONTENT provider override.)');

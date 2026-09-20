@@ -8,14 +8,16 @@
 
 // opencode provider 发现（纯函数，路径注入可测）：cpx 捕获 opencode 会话的
 // 前提是把用到的 provider baseURL 重定向到本机 proxy（OPENCODE_CONFIG_CONTENT，
-// 进程级、tier 6）。provider 候选有三个来源：
+// 进程级、tier 6）。provider 候选有四个来源：
 //   ① 命令行 `-m <provider>/<model>`（精确，优先）
 //   ② auth.json 的 provider keys（opencode 官方凭据存储）
-//   ③ 用户 opencode 配置（~/.config/opencode/opencode.json[c] 的 provider 段，
-//      自定义 provider——如私有 AI 网关；baseURL 就在配置里）
-// ③ 是本模块新增：此前只看 ①②，自定义 provider 的 baseURL 从未被重定向 →
-// 整个会话的 LLM 流量直连上游、proxy 颗粒无收（客户现场 ses_fa840cd30ffe：
-// gateway/glm-5.3 走 volceapi 直连，cpx 捕获 0 字节）。
+//   ③ 用户全局配置（~/.config/opencode/opencode.json[c] 的 provider 段）
+//   ④ 项目级配置（opencode.json[c] / .opencode/opencode.json[c]，cwd 向上到
+//      git 根遍历——opencode 文档：先在 cwd 找，再向上到最近的 git 目录）
+// ③④ 的自定义 provider（如私有 AI 网关）baseURL 就在配置本体里，此前只看 ①②
+// → 自定义 provider 的 baseURL 从未被重定向 → 整个会话的 LLM 流量直连上游、
+// proxy 颗粒无收（客户现场 ses_fa840cd30ffe：gateway/glm-5.3 走 volceapi 直连，
+// cpx 捕获 0 字节；当时修复只覆盖了全局配置，漏了项目级配置）。
 // 自定义 provider 的真实上游 baseURL 从配置本体读（不在 opencode 二进制里，
 // binary strings 扫描必 miss）。
 import fs from 'node:fs';
@@ -137,12 +139,33 @@ export function resolveProviderIds(opts: {
   return opts.profile === 'cannbot' ? ['cannbot', ...ids] : ids;
 }
 
+// 项目级配置目录（opencode 文档 §Locations/Per project：先在 cwd 找
+// opencode.json，再向上遍历到最近的 git 目录）。逐层产出 <dir> 与
+// <dir>/.opencode 两个候选根；<dir>/.opencode/opencode.json[c] 是 CANN fork /
+// 部分版本的项目配置位置（客户现场 huoshan-ai-gateway 只定义在项目级
+// .opencode/opencode.json，全局配置扫不到 → 直连上游 0 捕获）。cwd 参数可注入
+// （测试），缺省 process.cwd()。
+export function opencodeProjectConfigRoots(cwd?: string): string[] {
+  const roots: string[] = [];
+  let dir = path.resolve(cwd ?? process.cwd());
+  for (;;) {
+    roots.push(dir, path.join(dir, '.opencode'));
+    // opencode 以最近的 git 目录为项目根（.git 可能是目录或 worktree 文件）
+    if (fs.existsSync(path.join(dir, '.git'))) break;
+    const parent = path.dirname(dir);
+    if (parent === dir) break; // 已到文件系统根
+    dir = parent;
+  }
+  return roots;
+}
+
 // 配置根（XDG 感知，cannbot/opencode 双根——cannbot 是 opencode 系 fork，
-// 两边都可能有自定义 provider 定义）。
+// 两边都可能有自定义 provider 定义）。项目级配置优先（opencode 项目配置
+// 优先级高于全局配置；readCustomProvidersFromRoots 先到根优先）。
 export function opencodeConfigRoots(): string[] {
   const xdg = process.env.XDG_CONFIG_HOME;
   const home = xdg ? [xdg] : [path.join(process.env.HOME ?? '', '.config')];
-  const roots: string[] = [];
+  const roots: string[] = [...opencodeProjectConfigRoots()];
   for (const base of home) {
     roots.push(path.join(base, 'cannbot'), path.join(base, 'opencode'));
   }

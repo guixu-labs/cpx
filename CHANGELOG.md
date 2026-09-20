@@ -2,6 +2,12 @@
 
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 
+## [v0.1.6] - 2026-09-18
+
+### Fixed
+- 【项目级 provider 发现缺失——opencode 捕获 0 字节（客户现场 huoshan-ai-gateway 回归）】provider 发现链此前只有三个来源（`-m` / auth.json / 全局配置根 `~/.config/opencode`、`~/.config/cannbot`），项目级 `.opencode/opencode.json[c]` 从未被扫描：用户模型走项目级配置定义的 provider（huoshan-ai-gateway → volceapi）时，baseURL 未被重定向、opencode 直连上游、proxy 颗粒无收。修复 `opencodeConfigRoots`：新增 `opencodeProjectConfigRoots`（从 cwd 逐层向上到最近的 git 目录，每层产出 `<dir>` 与 `<dir>/.opencode` 两个候选根，覆盖 opencode 文档「先在 cwd 找、再向上到 git 根」的遍历语义），并排在全局配置根之前（项目配置优先级高于全局，与 opencode 合并语义一致）；启动报错指引同步补项目级配置路径。IT：`tests/e2e/cpx-project-provider.e2e.test.ts`（cwd 设为项目目录，验证 `.opencode/opencode.json` 的 provider 被注入 baseURL 重定向、upstream 从项目配置本体解析）+ `tests/ut/opencode-providers.test.ts` 项目级发现/遍历/优先级单测
+- 【`cpx` npm bin 启动器 cwd 错位】`bin/cpx.mjs` 原以 `cwd: PKG_DIR` 起 cpx-cli——`cpx <agent>` 实际在包安装目录（而非用户项目目录）启动 agent，`process.cwd()` 失真，项目级配置发现/agent 工作目录双双错位。修复：去掉 `cwd` 覆盖（继承用户 cwd），tsx loader 改 `file:` URL 绝对路径、入口脚本改 `PKG_DIR` 绝对路径（两者都不再依赖 cwd 解析）；tsx loader 定位用 `createRequire(import.meta.url).resolve('tsx')` 从 bin 自身做标准模块解析（与 postinstall 解析 esbuild 同款）——`npm i -g` 嵌套、装进用户项目/`npx` 时的 hoist 提升两种布局都能命中，不再硬编码 `PKG_DIR/node_modules/tsx/dist/loader.mjs`（hoist 布局下该路径不存在，启动即 `ERR_MODULE_NOT_FOUND`）。**会话代理启动同步收口（同类硬编码）**：`cpx-cli.ts` 起 `src/server.ts` 原用 `<pkg>/node_modules/.bin/tsx` 硬编码——hoist 布局下同样 miss，回落 `npx tsx` 经实测**不从用户项目解析提升的 tsx 而是从 registry 现场下载**（网络依赖、慢、离线即挂）；改为同一纪律（`resolveTsxLoader` 共用 helper，`node --import <loader> server.ts`），npx 仅作解析失败兜底。IT：`tests/ut/tsx-launcher.test.ts`（嵌套/hoist/缺失三布局解析语义）+ `tests/e2e/cpx-hoist-tsx.e2e.test.ts`（hoist 布局真跑：bin 起 CLI、代理真启动（假 agent 收到 proxy 地址）、PATH 前置假 npx 落盘标记断言回退从未触发、干净退出；还原旧实现该 IT 红）
+
 ## [v0.1.5] - 2026-09-17
 
 ### Fixed
