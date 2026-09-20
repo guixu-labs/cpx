@@ -9,20 +9,27 @@
 
 // cpx npm bin 启动器（npm install -g cannbot-proxy 后 `cpx` 命令的真身）。
 // 仓内开发态走仓根 cpx-cli wrapper（bash，自行寻 tsx）；npm 包形态用本文件：
-// tsx 是本包 dependency，安装即落 <pkg>/node_modules，用 node --import tsx 起 TS 源码。
+// tsx 是本包 dependency，但落位随安装形态而变（npm i -g 嵌套在包内、装进
+// 用户项目 / npx cannbot-proxy 时被提升到顶层 node_modules）——loader 经
+// createRequire 从本文件做标准模块解析定位，两种布局都能命中。
 
 import { spawn } from 'node:child_process'
+import { createRequire } from 'node:module'
 import path from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 
 const PKG_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const args = process.argv.slice(2)
 
+// 从 bin 自身位置做标准模块解析定位 tsx loader（与 postinstall 解析 esbuild 同款）：
+// npm i -g 时 tsx 嵌套在包内、装进用户项目/npx 时被提升到顶层 node_modules，
+// 两种布局 require.resolve 都能命中；tsx 的 `.` export 即 ./dist/loader.mjs。
+const tsxLoader = pathToFileURL(createRequire(import.meta.url).resolve('tsx')).href
+
 const child = spawn(
   process.execPath,
-  ['--import', 'tsx', path.join('src', 'cli', 'cpx-cli.ts'), ...args],
+  ['--import', tsxLoader, path.join(PKG_DIR, 'src', 'cli', 'cpx-cli.ts'), ...args],
   {
-    cwd: PKG_DIR,
     stdio: 'inherit',
     env: {
       ...process.env,
