@@ -133,7 +133,15 @@ class AnthropicReassembler implements Reassembler {
         const delta = (e as { delta?: Record<string, unknown> }).delta;
         if (delta?.stop_reason) this.stopReason = delta.stop_reason as string;
         const u = (e as { usage?: AnthropicUsage }).usage;
-        if (u && typeof u.output_tokens === 'number') this.usage.output_tokens = u.output_tokens;
+        if (u) {
+          // 官方流此事件只带累积 output_tokens；部分 anthropic 兼容网关（GLM）
+          // 把最终全量 usage 放这里、message_start 只给占位 input_tokens:0——
+          // 非零数值字段覆盖（零值不覆盖，防病态 delta 抹掉 start 已有的真值）
+          if (typeof u.output_tokens === 'number') this.usage.output_tokens = u.output_tokens;
+          if (typeof u.input_tokens === 'number' && u.input_tokens > 0) this.usage.input_tokens = u.input_tokens;
+          if (typeof u.cache_read_input_tokens === 'number' && u.cache_read_input_tokens > 0) this.usage.cache_read_input_tokens = u.cache_read_input_tokens;
+          if (typeof u.cache_creation_input_tokens === 'number' && u.cache_creation_input_tokens > 0) this.usage.cache_creation_input_tokens = u.cache_creation_input_tokens;
+        }
         break;
       }
       case 'message_stop':

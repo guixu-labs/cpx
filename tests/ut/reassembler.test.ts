@@ -50,6 +50,39 @@ describe('stream-reassembler: Anthropic', () => {
     expect(res.content[0].name).toBe('Read');
     expect(res.content[0].input).toEqual({ file_path: '/x.ts' });
   });
+
+  // GLM 等 anthropic 兼容网关把最终全量 usage 放 message_delta（message_start
+  // 只给占位 input_tokens:0）——旧实现只抄 output_tokens，input/cache 全丢：
+  // 现场 3.5 天会话 wire 捕获 input/cacheRead 记 0，原生 transcript 却全量
+  // （claude-code 聚合了 delta 全量），同会话 token 对账差 4.5 倍
+  it('GLM 形态：message_delta 携带全量 usage（start 为占位 0）→ 完整记账', () => {
+    const r = createReassembler('anthropic');
+    r.feed(sse([
+      { type: 'message_start', message: { model: 'glm-5.2', usage: { input_tokens: 0 } } },
+      { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } },
+      { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'ok' } },
+      { type: 'content_block_stop', index: 0 },
+      { type: 'message_delta', delta: { stop_reason: 'end_turn' }, usage: { input_tokens: 8265, cache_read_input_tokens: 16896, output_tokens: 284 } },
+      { type: 'message_stop' },
+    ]));
+    const res = r.result();
+    expect(res.usage?.input_tokens).toBe(8265);
+    expect(res.usage?.cache_read_input_tokens).toBe(16896);
+    expect(res.usage?.output_tokens).toBe(284);
+  });
+
+  it('病态保护：delta 的零值不覆盖 message_start 已有的真值', () => {
+    const r = createReassembler('anthropic');
+    r.feed(sse([
+      { type: 'message_start', message: { model: 'claude-x', usage: { input_tokens: 100, cache_read_input_tokens: 50 } } },
+      { type: 'message_delta', delta: { stop_reason: 'end_turn' }, usage: { input_tokens: 0, cache_read_input_tokens: 0, output_tokens: 3 } },
+      { type: 'message_stop' },
+    ]));
+    const res = r.result();
+    expect(res.usage?.input_tokens).toBe(100);
+    expect(res.usage?.cache_read_input_tokens).toBe(50);
+    expect(res.usage?.output_tokens).toBe(3);
+  });
 });
 
 describe('stream-reassembler: OpenAI', () => {
