@@ -49,9 +49,9 @@ beforeAll(() => {
   fs.cpSync(path.join(PROXY_ROOT, 'bin'), path.join(PKG, 'bin'), { recursive: true });
   fs.copyFileSync(path.join(PROXY_ROOT, 'package.json'), path.join(PKG, 'package.json'));
 
-  // npm hoist：运行时依赖（tsx + fzstd + undici；tsx 的 esbuild 传递依赖）提升
-  // 到顶层 node_modules，包内无副本
-  for (const dep of ['tsx', 'esbuild', '@esbuild', 'fzstd', 'undici']) {
+  // npm hoist：运行时依赖（tsx + fzstd + undici + 7zip-bin；tsx 的 esbuild 传递
+  // 依赖）提升到顶层 node_modules，包内无副本
+  for (const dep of ['tsx', 'esbuild', '@esbuild', 'fzstd', 'undici', '7zip-bin']) {
     fs.cpSync(path.join(REPO_NM, dep), path.join(PROJECT, 'node_modules', dep), { recursive: true });
   }
 
@@ -65,6 +65,11 @@ beforeAll(() => {
     '',
   ].join('\n'));
   fs.chmodSync(path.join(TMP, 'bin', 'npx'), 0o755);
+  // xdg-open/open 桩：退出路径 import 成功会 openBrowser——防真弹浏览器标签
+  for (const name of ['xdg-open', 'open']) {
+    fs.writeFileSync(path.join(TMP, 'bin', name), '#!/bin/sh\nexit 0\n');
+    fs.chmodSync(path.join(TMP, 'bin', name), 0o755);
+  }
 
   // 假 agent：记录注入的 OPENAI_BASE_URL（generic profile 直注入 env）
   AGENT_ENV = path.join(TMP, 'agent-env');
@@ -98,6 +103,8 @@ describe('cpx 会话代理 tsx 启动（用户项目 hoist 布局）', () => {
         ...process.env,
         HOME,
         CANNBOT_PROXY_DIR: CAPTURES,
+        // 钉死不可达：探测必败 → 不机会主义导入开发机在跑的真 insight、不开浏览器
+        CANNBOT_CPX_INSIGHT_BASE: 'http://127.0.0.1:1',
         PATH: [path.join(TMP, 'bin'), process.env.PATH ?? ''].join(path.delimiter),
       },
     });

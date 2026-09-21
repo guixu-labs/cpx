@@ -20,6 +20,9 @@ import { resolveTsxLoader } from './tsx-launcher';
 import { runUpload } from './cpx-upload';
 import { parseArgs } from './cpx-args';
 import { runCompleteMain } from './cpx-complete';
+import { resolveLfs } from '../cannbay/remote';
+import { ensureLfsBinaryAvailable, gitLfsSource, lfsBinaryPath } from '../lfs-setup';
+import { dropSessionScratch, sweepLeakedPlaceholders } from './cpx-scratch';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -32,12 +35,18 @@ const CPX_CONFIG_FILE = path.join(path.dirname(PROXY_DIR), 'cpx-config.json');
 interface CpxConfig {
   /** 注入压缩：记录 jsonl 时把重复的注册表/skills 注入替换为 [已压缩] 标记。默认关闭。 */
   dedupInjection: boolean;
+  /** LFS 上传：.jsonl.7z 以 LFS 指针出仓。仅用户显式设置时存在（undefined = 跟随默认开）。 */
+  lfsUpload?: boolean;
 }
 
 function loadCpxConfig(): CpxConfig {
   try {
     const raw = JSON.parse(fs.readFileSync(CPX_CONFIG_FILE, 'utf-8'));
-    return { dedupInjection: raw.dedupInjection === true };
+    const cfg: CpxConfig = { dedupInjection: raw.dedupInjection === true };
+    // lfsUpload 三态保留（undefined = 未设置）：老配置文件（仅 dedup）不得被
+    // 隐式归一成 false——那会把 dedup 用户静默打到 blob 模式
+    if (raw && typeof raw.lfsUpload === 'boolean') cfg.lfsUpload = raw.lfsUpload;
+    return cfg;
   } catch {
     return { dedupInjection: false };
   }
@@ -56,12 +65,20 @@ function runConfig(args: string[]): void {
     console.log(`dedup injection : ${cfg.dedupInjection ? 'on' : 'off'}  (已写入 ${CPX_CONFIG_FILE})`);
     return;
   }
-  if (args.length === 0) {
-    console.log(`config file     : ${CPX_CONFIG_FILE}`);
-    console.log(`dedup injection : ${cfg.dedupInjection ? 'on' : 'off'}   (cpx config dedup on|off 切换，热生效；压缩仅作用于捕获记录，不改动转发)`);
+  if (args[0] === 'lfs' && (args[1] === 'on' || args[1] === 'off')) {
+    cfg.lfsUpload = args[1] === 'on';
+    saveCpxConfig(cfg);
+    console.log(`lfs upload      : ${cfg.lfsUpload ? 'on' : 'off'}  (已写入 ${CPX_CONFIG_FILE})`);
     return;
   }
-  console.error('用法: cpx config [dedup on|off]');
+  if (args.length === 0) {
+    const lfs = resolveLfs();
+    console.log(`config file     : ${CPX_CONFIG_FILE}`);
+    console.log(`dedup injection : ${cfg.dedupInjection ? 'on' : 'off'}   (cpx config dedup on|off 切换，热生效；压缩仅作用于捕获记录，不改动转发)`);
+    console.log(`lfs upload      : ${lfs.enabled ? 'on' : 'off'}（${lfs.source === 'default' ? '默认' : lfs.source}）  (cpx config lfs on|off 切换；.jsonl.7z 以 LFS 指针出仓，容量脱离 git 仓配额)`);
+    return;
+  }
+  console.error('用法: cpx config [dedup on|off] [lfs on|off]');
   process.exit(2);
 }
 const CLAUDE_SETTINGS = path.join(os.homedir(), '.claude', 'settings.json');
@@ -79,7 +96,10 @@ const USAGE = `cpx ${VERSION_DISPLAY} — agent↔模型明文捕获代理编排
                                          全程零交互；精确分类显式给 --category）
   cpx list                              列出全部捕获会话文件（按时间降序，只读）
   cpx status [--kill [--all]]            查看状态；--kill 清理无 sid 的孤儿 proxy，--all 连活跃会话一起清
-  cpx config [dedup on|off]              查看/配置；dedup=注入压缩（默认 off，热生效，只压缩捕获记录不改转发）
+  cpx config [dedup on|off] [lfs on|off]  查看/配置；dedup=注入压缩（默认 off，热生效，只压缩捕获记录不改转发）；
+                                          lfs=LFS 上传（默认 on，.jsonl.7z 以 LFS 指针出仓，容量脱离 git 仓配额）
+  cpx lfs-setup                           git-lfs 自举：系统件缺失时自动下载 cpx 私有件（sha256 校验，零全局污染）；
+                                          上传时也会自动触发，此命令供预取/配镜像后重试
   cpx upload [sid] [flags]               补传会话到 CANNBay（直传，无需 insight；缺省 sid = 最新捕获，
                                          零参数即走默认：提交人=git 用户名、范式目录=others）。
                                          flags：--category 精确分类 [--submitter] [--desc] [--opgen success|failure]
@@ -555,11 +575,21 @@ async function runStatus(opts: { kill?: boolean; all?: boolean } = {}): Promise<
 
   console.log(`captures dir    : ${PROXY_DIR}`);
   console.log(`dedup injection : ${loadCpxConfig().dedupInjection ? 'on' : 'off'}  (cpx config dedup on|off)`);
+  const lfs = resolveLfs();
+  const src = gitLfsSource();
+  const lfsNote = !lfs.enabled
+    ? '(cpx config lfs on 开启)'
+    : src === 'system'
+      ? 'git-lfs system'
+      : src === 'private'
+        ? `git-lfs cpx 私有（${lfsBinaryPath()}）`
+        : 'git-lfs 缺失——上传时自动获取（cpx lfs-setup 可预取/重试）';
+  console.log(`lfs upload      : ${lfs.enabled ? 'on' : 'off'}（${lfs.source === 'default' ? '默认' : lfs.source}）  ${lfsNote}`);
   let caps: { f: string; size: number; mt: number }[] = [];
   try {
     caps = fs.readdirSync(PROXY_DIR)
-      .filter(f => f.endsWith('.jsonl') || f.endsWith('.jsonl.gz'))
-      .map(f => { try { const st = fs.statSync(path.join(PROXY_DIR, f)); return { f, size: st.size, mt: st.mtimeMs }; } catch { return null; } })
+      .filter(f => f.endsWith('.jsonl') || f.endsWith('.jsonl.gz') || f.endsWith('.jsonl.7z'))
+      .map(f => { try { const st = fs.statSync(path.join(PROXY_DIR, f)); return st.size === 0 ? null : { f, size: st.size, mt: st.mtimeMs }; } catch { return null; } })
       .filter((x): x is { f: string; size: number; mt: number } => !!x)
       .sort((a, b) => b.mt - a.mt)
       .slice(0, 8);
@@ -607,18 +637,6 @@ function dedupStats(file: string): { savedChars: number; dedupedCount: number } 
   return { savedChars, dedupedCount };
 }
 
-// Resolve capture file candidates for a sid or raw path argument. Accepts sid
-// with or without the cpx- prefix, plus plain/`.gz` file paths (shared by the
-// upload subcommand).
-function captureCandidatesFor(arg: string): string[] {
-  return arg.endsWith('.jsonl') || arg.endsWith('.jsonl.gz')
-    ? [path.resolve(arg), `${path.resolve(arg)}.gz`]
-    : [
-      path.join(PROXY_DIR, `${arg}.jsonl.gz`), path.join(PROXY_DIR, `cpx-${arg}.jsonl.gz`),
-      path.join(PROXY_DIR, `${arg}.jsonl`), path.join(PROXY_DIR, `cpx-${arg}.jsonl`),
-    ];
-}
-
 // ── `cpx list` — 捕获会话清单（只读，按 mtime 降序）──────────────────────
 // 导入是 insight 的职责（Web UI「Import Session」支持选 proxy 目录扫描；
 // 捕获退出时若 insight 在运行则自动导入）。list 只回答"我捕了什么"：sid
@@ -659,11 +677,11 @@ function readSessionMetaFor(stem: string, sid: string): { framework: string | nu
 }
 
 function countSubagents(sid: string): number {
-  // subagents 目录按 sid（无 cpx- 前缀）挂载；.jsonl/.jsonl.gz 同 stem 去重。
+  // subagents 目录按 sid（无 cpx- 前缀）挂载；.jsonl/.jsonl.7z/.jsonl.gz 同 stem 去重。
   const stems = new Set<string>();
   try {
     for (const n of fs.readdirSync(path.join(PROXY_DIR, sid, 'subagents'))) {
-      const m = n.match(/^(.+)\.jsonl(\.gz)?$/);
+      const m = n.match(/^(.+)\.jsonl(\.7z|\.gz)?$/);
       if (m) stems.add(m[1]);
     }
   } catch { /* no subagents */ }
@@ -675,13 +693,15 @@ function scanCaptureEntries(): CaptureEntry[] {
   let names: string[] = [];
   try { names = fs.readdirSync(PROXY_DIR); } catch { return []; }
   for (const name of names) {
-    const m = name.match(/^(.+)\.jsonl(\.gz)?$/);
+    const m = name.match(/^(.+)\.jsonl(\.7z|\.gz)?$/);
     if (!m) continue;
     const stem = m[1];
     if (byStem.has(stem)) continue;
+    // 优先级与 resolveCapturePath 同款：明文（live）> .7z（新）> .gz（存量）
     const plain = path.join(PROXY_DIR, `${stem}.jsonl`);
+    const z7 = path.join(PROXY_DIR, `${stem}.jsonl.7z`);
     const gz = path.join(PROXY_DIR, `${stem}.jsonl.gz`);
-    const file = fs.existsSync(plain) ? plain : gz;
+    const file = fs.existsSync(plain) ? plain : fs.existsSync(z7) ? z7 : gz;
     try {
       const st = fs.statSync(file);
       if (st.size === 0) continue; // 占位空文件（无记录的 pinned 候选）
@@ -722,7 +742,7 @@ function runList(): void {
     );
   }
   const liveCount = entries.filter(e => e.live).length;
-  if (liveCount > 0) console.log(`\n  live = 明文态（捕获进行中 / 未归档压缩）；rest = gzip at rest`);
+  if (liveCount > 0) console.log(`\n  live = 明文态（捕获进行中 / 未归档压缩）；rest = 7z at rest（存量 gz 同样可读）`);
   console.log(`\n导入分析：insight Web UI「Import Session → JSONL」选择上述目录（或单选某个文件）；insight 在运行时捕获退出即自动导入`);
 }
 
@@ -737,6 +757,18 @@ async function main(): Promise<void> {
   }
   if (sub === 'config') {
     runConfig(process.argv.slice(3));
+    return;
+  }
+  if (sub === 'lfs-setup') {
+    try {
+      const r = await ensureLfsBinaryAvailable();
+      console.log(r.source === 'system'
+        ? `git-lfs : system 已安装（无需自举）`
+        : `git-lfs : cpx 私有件就绪 → ${lfsBinaryPath()}${r.downloaded ? '（本次自动获取）' : ''}`);
+    } catch (e) {
+      console.error(e instanceof Error ? e.message : String(e));
+      process.exitCode = 1;
+    }
     return;
   }
   if (sub === 'upload') {
@@ -818,6 +850,17 @@ async function main(): Promise<void> {
 
   const sid = randomUUID();
 
+  // 启动期扫除泄漏占位（信号击杀/SIGKILL 残留的历史积压）：活运行以 proxy
+  // 进程的 CANNBOT_PROXY_SESSION_ID 判定，绝不误清进行中会话；/proc 不可用
+  // （macOS）无法判定 liveness 时跳过（信号路径清理已由 handler 覆盖）
+  if (fs.existsSync('/proc')) {
+    try {
+      const livePinned = new Set(dedupePairs(findProxyProcs()).map(p => p.sid).filter((s): s is string => !!s));
+      const swept = sweepLeakedPlaceholders(PROXY_DIR, livePinned);
+      if (swept > 0) log(`swept ${swept} leaked empty placeholder(s)（Ctrl+C/击杀残留）`);
+    } catch { /* best-effort */ }
+  }
+
   // codex ChatGPT 登录用户：proxy 上游需指向 chatgpt.com 后端（不是
   // api.openai.com）。检测 ~/.codex/auth.json 是否存在来判断 auth 模式。
   // cpx 已有 API key 的走自定义 provider（api.openai.com），不需要此覆盖。
@@ -871,8 +914,8 @@ async function main(): Promise<void> {
     try { sessionProxy.child.stdout?.destroy(); } catch { /* */ }
     try { sessionProxy.child.stderr?.destroy(); } catch { /* */ }
   }
-  process.on('SIGINT', () => { cleanup(); process.exit(130); });
-  process.on('SIGTERM', () => { cleanup(); process.exit(143); });
+  process.on('SIGINT', () => { cleanup(); dropSessionScratch(PROXY_DIR, sid); process.exit(130); });
+  process.on('SIGTERM', () => { cleanup(); dropSessionScratch(PROXY_DIR, sid); process.exit(143); });
   // 挂断后 stdout/stderr 指向已死 pty：后续任何日志写入收到 EIO —— 与 EPIPE
   // 不同，Node 对 stdout 的 EIO 默认不忽略，会以 uncaught error 崩掉孤儿态收尾
   // 流程（真实 pty 挂断复测发现：SIGHUP handler 自己的 log() 就足以触发）。
@@ -958,7 +1001,7 @@ async function main(): Promise<void> {
   // The manifest is per-run scratch — always drop.
   try {
     if (!produced.some(x => x.file === jsonlPath)) {
-      for (const f of [jsonlPath, `${jsonlPath}.gz`]) {
+      for (const f of [jsonlPath, `${jsonlPath}.7z`, `${jsonlPath}.gz`]) {
         if (fs.existsSync(f)) fs.rmSync(f);
       }
     }
@@ -970,11 +1013,11 @@ async function main(): Promise<void> {
     process.exit(0);
   }
 
-  // gzip at rest（docs/COMPRESSION-DESIGN.md）：会话关闭，所有本运行产物 + 其
-  // subagents 压缩 —— 在 normalize/import 之前，sourcePath 一次定型为 .gz。
-  // 同时给伴生 cc-session-meta 打 governed 标记（spec §4.4）：字节流已经
-  // cpx 落盘咽喉 redactor 全量清洗（server.ts dispatchEmit），cannbay2 上传
-  // 侧据此走直传快路径（免解压重洗重压）。
+  // 7z at rest（docs/COMPRESSION-DESIGN.md）：会话关闭，所有本运行产物 + 其
+  // subagents 压缩为 .jsonl.7z —— 在 normalize/import 之前，sourcePath 一次
+  // 定型为 .7z。同时给伴生 cc-session-meta 打 governed 标记（spec §4.4）：
+  // 字节流已经 cpx 落盘咽喉 redactor 全量清洗（server.ts dispatchEmit），
+  // cannbay2 上传侧据此走直传快路径（免解压重洗重压）。
   const markGoverned = (sidRaw: string): void => {
     try {
       const metaPath = sessionMetaPath(sidRaw);
@@ -1006,7 +1049,7 @@ async function main(): Promise<void> {
   // insight here).
   const importLive = await insightUp();
   if (!importLive) {
-    log(`insight not running — ${produced.length} capture(s) kept at ${PROXY_DIR}; import later via insight Web UI「Import Session → JSONL」（cpx-<sid>.jsonl.gz 可直接选，cpx- 前缀与 .gz 自动处理）or \`cpx list\` to browse`);
+    log(`insight not running — ${produced.length} capture(s) kept at ${PROXY_DIR}; import later via insight Web UI「Import Session → JSONL」（cpx-<sid>.jsonl.7z 可直接选，cpx- 前缀与 .7z/.gz 自动处理）or \`cpx list\` to browse`);
   }
   let lastUrl: string | null = null;
   for (const { sid: captureSid, file: p } of produced) {

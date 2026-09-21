@@ -84,6 +84,8 @@ function runCpx(extraEnv: Record<string, string>) {
       XDG_CONFIG_HOME: CFG,
       XDG_DATA_HOME: DATA,
       CANNBOT_PROXY_DIR: CAPTURES,
+      // 钉死不可达：探测必败 → 不机会主义导入开发机在跑的真 insight、不开浏览器
+      CANNBOT_CPX_INSIGHT_BASE: 'http://127.0.0.1:1',
       ...extraEnv,
     },
   });

@@ -8,9 +8,9 @@
 
 // cpx 直传编排（与 insight uploadCannbay2Session 的 cpx-源路径同构，但零 DB
 // 依赖——staging 直接从捕获目录取 cpx 原生产物）：
-//   staging：cpx-<sid>.jsonl(.gz) → sessions/<sid>/<sid>.jsonl(.gz)、
+//   staging：cpx-<sid>.jsonl(.7z|.gz|.jsonl) → 统一转 7z → sessions/<sid>/<sid>.jsonl.7z、
 //            cpx-<sid>.meta.json → <sid>.meta.json（opGen 标注入）、
-//            <sid>/subagents/ 白名单拷贝
+//            <sid>/subagents/ 白名单拷贝（同样转 7z——存量 gz 上传时迁移到新格式）
 //   网关：提交人（description 首行协议）+ 范式目录（默认仓动态白名单，
 //         与 insight validateCategory 同规则）
 //   上传：governStagedSession → uploadFolder（commit message 与 insight
@@ -22,6 +22,8 @@ import path from 'node:path';
 import { resolveCannbayRemote, type CannbayRemote } from './remote';
 import { listParadigmDirs, uploadFolder } from './mirror';
 import { governStagedSession, GovernanceError } from './govern';
+import { ensureLfsBinaryAvailable, type LfsSetupDeps } from '../lfs-setup';
+import { ensure7z } from '../compression';
 
 export { GovernanceError } from './govern';
 
@@ -72,6 +74,8 @@ export interface UploadCaptureOptions {
   baseline?: boolean;
   opGen?: 'success' | 'failure';
   remote?: CannbayRemote;
+  /** git-lfs 自举依赖注入（测试用；缺省真下载） */
+  lfsDeps?: LfsSetupDeps;
 }
 
 export interface UploadCaptureResult {
@@ -89,6 +93,9 @@ export async function uploadCaptureSession(opts: UploadCaptureOptions): Promise<
   const { error: submitterError } = extractSubmitter(opts.description);
   if (submitterError) throw new Error(submitterError);
   const remote = opts.remote ?? resolveCannbayRemote();
+  // LFS 模式 git-lfs 自举（系统件 > 私有件 > 自动下载，staging/治理/镜像操作
+  // 之前；全部失败抛指引错误——ensureLfsReady 仍兜底）
+  if (remote.lfs) await ensureLfsBinaryAvailable(opts.lfsDeps);
   if (opts.baseline && !opts.category?.trim()) {
     throw new Error('baseline 上传仅在默认仓且选中范式目录时可用');
   }
@@ -98,11 +105,18 @@ export async function uploadCaptureSession(opts: UploadCaptureOptions): Promise<
   try {
     const sessionDir = path.join(stagingDir, 'sessions', sid);
     fs.mkdirSync(sessionDir, { recursive: true });
-    const src = fs.existsSync(opts.captureFile) ? opts.captureFile
-      : fs.existsSync(`${opts.captureFile}.gz`) ? `${opts.captureFile}.gz` : null;
-    if (!src) throw new Error(`capture not found: ${opts.captureFile}(.gz)`);
-    const mainExt = src.endsWith('.jsonl.gz') ? '.jsonl.gz' : '.jsonl';
-    fs.copyFileSync(src, path.join(sessionDir, `${sid}${mainExt}`));
+    // 三形态候选：调用方传已解析路径（必在）；裸 stem 兜底 .7z > .gz。
+    // staging 统一 ensure7z 出仓（存量 gz 上传时借此迁移到新格式——湖内同
+    // sid 重传整体替换语义）
+    let src = opts.captureFile;
+    if (!fs.existsSync(src)) {
+      src = [`${opts.captureFile}.7z`, `${opts.captureFile}.gz`].find(f => fs.existsSync(f)) ?? src;
+    }
+    if (!fs.existsSync(src)) throw new Error(`capture not found: ${opts.captureFile}(.7z/.gz)`);
+    const srcExt = src.endsWith('.7z') ? '.7z' : src.endsWith('.gz') ? '.gz' : '';
+    const stagedMain = path.join(sessionDir, `${sid}.jsonl${srcExt}`);
+    fs.copyFileSync(src, stagedMain);
+    ensure7z(stagedMain);
 
     // 伴生 meta：writer 现代际 cpx-<sid>.meta.json / 旧代际 <sid>.meta.json 双候选
     const capDir = path.dirname(src);
@@ -114,14 +128,18 @@ export async function uploadCaptureSession(opts: UploadCaptureOptions): Promise<
       throw new Error(`session meta missing for "${sid}"（cpx 捕获必带 cc-session-meta）`);
     }
 
-    // subagents 随行（白名单拷贝：杂散文件不清洗也不该出公开仓）
+    // subagents 随行（白名单拷贝：杂散文件不清洗也不该出公开仓）；拷入后
+    // 同样 ensure7z —— 湖内出仓形态统一为新格式
     const subagentsDir = path.join(capDir, sid, 'subagents');
     if (fs.existsSync(subagentsDir)) {
       const dest = path.join(sessionDir, 'subagents');
       fs.mkdirSync(dest, { recursive: true });
       for (const entry of fs.readdirSync(subagentsDir, { withFileTypes: true })) {
-        if (entry.isFile() && (entry.name.endsWith('.jsonl') || entry.name.endsWith('.jsonl.gz') || entry.name.endsWith('.json'))) {
+        if (entry.isFile() && (entry.name.endsWith('.jsonl') || entry.name.endsWith('.jsonl.gz') || entry.name.endsWith('.jsonl.7z') || entry.name.endsWith('.json'))) {
           fs.copyFileSync(path.join(subagentsDir, entry.name), path.join(dest, entry.name));
+          if (entry.name.endsWith('.jsonl') || entry.name.endsWith('.jsonl.gz')) {
+            ensure7z(path.join(dest, entry.name));
+          }
         }
       }
     }

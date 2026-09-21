@@ -13,13 +13,14 @@
 // governance 拒绝与 git 错误原样呈现，捕获保留本地零丢失。
 
 import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import readline from 'node:readline/promises';
-import zlib from 'node:zlib';
 import { uploadCaptureSession, listCannbayDirs, GovernanceError } from '../cannbay';
-import { redactRemoteSecrets } from '../cannbay/remote';
+import { redactRemoteSecrets, resolveLfs } from '../cannbay/remote';
+import { readCaptureBuffer } from '../compression';
 
 const INSIGHT_PORT = 21025;
 // 与 cpx-cli 同源：环境可覆写（IT 用 mock insight 走完整链路）
@@ -92,6 +93,7 @@ export function resolveCaptureTarget(sid: string | undefined, dir: string): Capt
   if (sid) {
     const stem = sid.replace(/^cpx-/, '');
     const candidates = [
+      path.join(dir, `cpx-${stem}.jsonl.7z`), path.join(dir, `${stem}.jsonl.7z`),
       path.join(dir, `cpx-${stem}.jsonl.gz`), path.join(dir, `${stem}.jsonl.gz`),
       path.join(dir, `cpx-${stem}.jsonl`), path.join(dir, `${stem}.jsonl`),
     ];
@@ -103,7 +105,7 @@ export function resolveCaptureTarget(sid: string | undefined, dir: string): Capt
   let entries: fs.Dirent[];
   try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { entries = []; }
   for (const e of entries) {
-    const m = e.name.match(/^(?:cpx-)?([\w.-]+)\.jsonl(\.gz)?$/);
+    const m = e.name.match(/^(?:cpx-)?([\w.-]+)\.jsonl(\.7z|\.gz)?$/);
     if (!m || !e.isFile()) continue;
     const file = path.join(dir, e.name);
     const st = fs.statSync(file);
@@ -145,18 +147,18 @@ export interface UploadStash {
   submitter: string;
   opGen?: 'success' | 'failure';
   desc?: string;
-  capturedBytes: number;
+  capturedSha256: string;
   at: string;
 }
 
 function stashPathFor(captureFile: string): string {
-  return captureFile.replace(/\.jsonl(\.gz)?$/, '.upload.json');
+  return captureFile.replace(/\.jsonl(\.7z|\.gz)?$/, '.upload.json');
 }
 
 export function readUploadStash(captureFile: string): UploadStash | null {
   try {
     const raw = JSON.parse(fs.readFileSync(stashPathFor(captureFile), 'utf8')) as UploadStash;
-    return typeof raw.category === 'string' && typeof raw.submitter === 'string' && typeof raw.capturedBytes === 'number' ? raw : null;
+    return typeof raw.category === 'string' && typeof raw.submitter === 'string' && typeof raw.capturedSha256 === 'string' ? raw : null;
   } catch {
     return null;
   }
@@ -168,26 +170,33 @@ export function writeUploadStash(captureFile: string, stash: UploadStash): void 
   } catch { /* 记忆失败不阻断上传结果 */ }
 }
 
-/** 会话当前逻辑字节量（主捕获 + subagents，统一解压后计——快照时明文、
- * 退出后压缩，raw 字节天然不等，逻辑字节才可比）：sidecar 增量判定基准。 */
-export function captureBytes(target: CaptureTarget): number {
-  let total = 0;
-  const add = (file: string) => {
-    try {
-      const buf = fs.readFileSync(file);
-      total += (file.endsWith('.gz') ? zlib.gunzipSync(buf) : buf).length;
-    } catch { /* 竞态删除忽略 */ }
-  };
-  add(target.file);
+/** 会话变更指纹（主捕获 + subagents 未压缩内容的 sha256 串联）：sidecar
+ *  增量判定基准。形态无关——快照时明文（会话内 agent 自执行 cpx upload）、
+ *  退出后压缩（退出路径 autoupload），同内容必须同指纹，raw 字节天然不等。
+ *  全程 Buffer 零字符串：整文件 toString（>512MB V8 单字符串上限）或 .7z
+ *  解压超限（>1GiB maxBuffer）抛错会被吞掉计 0，首次上传 stash 记 0 后
+ *  「0 === 0」恒真 → 捕获变了也静默跳过（631MB wire 捕获量级在案）。
+ *  内容态任一文件读取失败 → 整体降级 at-rest 字节指纹（零解压永不失败）：
+ *  与内容态指纹天然失配 → 走重传（幂等无害），绝不静默跳过。 */
+export function captureFingerprint(target: CaptureTarget): string {
+  const files = [target.file];
   const subDir = path.join(path.dirname(target.file), target.sid, 'subagents');
   try {
     for (const e of fs.readdirSync(subDir, { withFileTypes: true })) {
-      if (e.isFile() && (e.name.endsWith('.jsonl') || e.name.endsWith('.jsonl.gz'))) {
-        add(path.join(subDir, e.name));
+      if (e.isFile() && (e.name.endsWith('.jsonl') || e.name.endsWith('.jsonl.gz') || e.name.endsWith('.jsonl.7z'))) {
+        files.push(path.join(subDir, e.name));
       }
     }
   } catch { /* 无 subagents */ }
-  return total;
+  try {
+    const h = createHash('sha256');
+    for (const f of files) h.update(readCaptureBuffer(f));
+    return h.digest('hex');
+  } catch {
+    const h = createHash('sha256');
+    for (const f of files) h.update(fs.readFileSync(f));
+    return h.digest('hex');
+  }
 }
 
 export interface SessionInfo {
@@ -201,7 +210,7 @@ export interface SessionInfo {
 /** 伴生 meta.json（cc-session-meta）读 framework；失败仅降级为 null。 */
 export function readMetaFramework(file: string): string | null {
   try {
-    const metaFile = file.replace(/\.jsonl(\.gz)?$/, '.meta.json');
+    const metaFile = file.replace(/\.jsonl(\.7z|\.gz)?$/, '.meta.json');
     const meta = JSON.parse(fs.readFileSync(metaFile, 'utf8'));
     return meta?.x_cannbay?.data?.framework ?? null;
   } catch { return null; }
@@ -332,7 +341,7 @@ export async function runUpload(argv: string[], deps: UploadDeps = {}): Promise<
   // 路径 autoupload / 手动补传都不再弹向导问一遍；带了信息 flag 则重传替换）
   const stash = readUploadStash(target.file);
   const hasInfoFlags = !!(cliFlags.category || cliFlags.submitter || cliFlags.opgen || cliFlags.desc);
-  if (stash && !hasInfoFlags && captureBytes(target) === stash.capturedBytes) {
+  if (stash && !hasInfoFlags && captureFingerprint(target) === stash.capturedSha256) {
     log(`已上传过（${stash.at}，提交人=${stash.submitter} 范式=${stash.category}）且捕获无新增 —— 跳过`);
     return 0;
   }
@@ -442,6 +451,8 @@ export async function runUpload(argv: string[], deps: UploadDeps = {}): Promise<
 
   const description = buildUploadDescription(target, info, wizardAnswers.submitter, wizardAnswers.desc);
   log(`uploading: 提交人=${wizardAnswers.submitter} 范式=${wizardAnswers.category}${wizardAnswers.baseline ? '（baseline）' : ''}${wizardAnswers.opgen ? ` opgen=${wizardAnswers.opgen}` : ''} …`);
+  // 存储模式注明（真直传与 resolveCannbayRemote 同源决议；仅展示用途）
+  const lfsOn = resolveLfs().enabled;
   try {
     const result = await (deps.uploadImpl ?? uploadCaptureSession)({
       sid: target.sid,
@@ -451,7 +462,7 @@ export async function runUpload(argv: string[], deps: UploadDeps = {}): Promise<
       baseline: wizardAnswers.baseline || undefined,
       opGen: wizardAnswers.opgen,
     });
-    out(`✅ uploaded → ${result.folder}${result.unchanged ? '（内容未变，跳过推送）' : ''}`);
+    out(`✅ uploaded → ${result.folder}${result.unchanged ? '（内容未变，跳过推送）' : ''}${lfsOn ? '（LFS 存储：实体进 LFS，不计 git 仓配额）' : '（git blob 存储：计入数据仓配额）'}`);
     log('  cannbay : insight Web UI「CANNBay」列表可见（无需 insight 在运行）');
     // sidecar 记忆：记录本次上传信息与捕获字节量——后续 autoupload/补传
     // 据此免交互复用、无新增静默跳过
@@ -460,7 +471,7 @@ export async function runUpload(argv: string[], deps: UploadDeps = {}): Promise<
       submitter: wizardAnswers.submitter,
       opGen: wizardAnswers.opgen,
       desc: wizardAnswers.desc,
-      capturedBytes: captureBytes(target),
+      capturedSha256: captureFingerprint(target),
       at: new Date().toISOString(),
     });
     return 0;

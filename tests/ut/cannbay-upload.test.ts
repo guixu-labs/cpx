@@ -8,7 +8,7 @@
 
 // cpx 直传 cannbay IT：真实本地 bare 仓（CANNBAY2_REMOTE_URL/PUSH_URL/CPX_CACHE_DIR
 // 指向 tmp，与 insight cannbay2 同款测试手法）端到端验证：
-//   ① 直传布局：agent-sift/<sid>/<sid>.jsonl.gz + meta + subagents；commit
+//   ① 直传布局：agent-sift/<sid>/<sid>.jsonl.7z + meta + subagents；commit
 //      message 协议（首行提交人 + body 范式行）
 //   ② 快路径（governed 标记）：压缩字节原样出仓（blob 与源逐字节一致）
 //   ③ 慢路径（明文/无标记）：注入假密钥 → 出仓 blob 为清洗后内容；复检
@@ -17,6 +17,7 @@
 //   ⑤ 范式目录动态白名单（typo 拒绝 / sessions 拒绝）
 //   ⑥ baseline 交换（新 baseline 顶掉旧的，旧会话移回范式普通目录）
 //   ⑦ 幂等 unchanged；换范式旧位置清理
+//   ⑧ 存量 gz 迁移：旧代际 gz 捕获上传 → 湖内落 .jsonl.7z（重传整体替换语义）
 
 import { describe, it, expect, beforeAll } from 'vitest';
 import { execSync } from 'node:child_process';
@@ -24,6 +25,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import zlib from 'node:zlib';
+import { compressCaptureFile, readCaptureText } from '../../src/compression.ts';
 
 // remote.ts 的 env 常量在模块加载时读取——bare 仓环境必须在 import 前就位
 let tmp: string;
@@ -43,7 +45,7 @@ beforeAll(async () => {
   execSync(`git init --bare -b main "${bare}"`, { stdio: 'pipe' });
   const seed = path.join(tmp, 'seed');
   fs.mkdirSync(path.join(seed, 'agent-sift'), { recursive: true });
-  fs.writeFileSync(path.join(seed, '.gitattributes'), '*.gz filter=lfs diff=lfs merge=lfs -text\n*.jsonl filter=lfs\n');
+  fs.writeFileSync(path.join(seed, '.gitattributes'), '*.7z filter=lfs diff=lfs merge=lfs -text\n*.gz filter=lfs diff=lfs merge=lfs -text\n*.jsonl filter=lfs\n');
   fs.writeFileSync(path.join(seed, 'agent-sift', '.gitkeep'), '');
   git('git init -b main .', seed);
   git('git -c user.name=seed -c user.email=seed@x add -A', seed);
@@ -52,11 +54,15 @@ beforeAll(async () => {
   process.env.CANNBAY2_REMOTE_URL = bare;
   process.env.CANNBAY2_PUSH_URL = bare;
   process.env.CANNBAY2_CPX_CACHE_DIR = path.join(tmp, 'cache');
+  // 钉 blob 模式：本文件断言的是默认（非 LFS）行为——lfs 行剔除 / 快路径
+  // 字节原样出仓（LFS 默认开后，未设 env 会翻转成 LFS 路径）；LFS 路径见
+  // cannbay-lfs.test.ts
+  process.env.CANNBAY2_LFS = '0';
   process.env.CANNBOT_PROXY_DIR = captures;
   cannbay = await import('../../src/cannbay');
 });
 
-function writeCapture(sid: string, opts: { governed?: boolean; plain?: boolean; dirty?: boolean; subagents?: string[] } = {}): void {
+function writeCapture(sid: string, opts: { governed?: boolean; plain?: boolean; dirty?: boolean; subagents?: string[]; legacyGz?: boolean } = {}): void {
   const lines = opts.dirty
     ? [
         JSON.stringify({ type: 'user', message: { role: 'user', content: 'check this: sk-ant-abc123def456ghi789jkl012 and ANTHROPIC_API_KEY=sk-proj-abcdefghijklmnopqrstuv' } }),
@@ -64,8 +70,16 @@ function writeCapture(sid: string, opts: { governed?: boolean; plain?: boolean; 
       ]
     : [JSON.stringify({ type: 'wire', i: 0 }), JSON.stringify({ type: 'wire', i: 1 })];
   const text = lines.join('\n') + '\n';
-  const main = path.join(captures, `cpx-${sid}.jsonl${opts.plain ? '' : '.gz'}`);
-  fs.writeFileSync(main, opts.plain ? text : zlib.gzipSync(text));
+  const mainStem = path.join(captures, `cpx-${sid}.jsonl`);
+  if (opts.plain) {
+    fs.writeFileSync(mainStem, text);
+  } else if (opts.legacyGz) {
+    // 旧代际形态：gzip at rest（上传链应迁移为 .7z 出仓）
+    fs.writeFileSync(`${mainStem}.gz`, zlib.gzipSync(Buffer.from(text)));
+  } else {
+    fs.writeFileSync(mainStem, text);
+    compressCaptureFile(mainStem);
+  }
   fs.writeFileSync(path.join(captures, `cpx-${sid}.meta.json`), JSON.stringify({
     x_cannbay: { schema: 'cc-session-meta', version: 1, data: { producer: 'cpx', framework: 'claude-code', protocol: 'anthropic', sid, ...(opts.governed === false ? {} : { governed: true }) } },
   }));
@@ -73,9 +87,14 @@ function writeCapture(sid: string, opts: { governed?: boolean; plain?: boolean; 
     const subDir = path.join(captures, sid, 'subagents');
     fs.mkdirSync(subDir, { recursive: true });
     for (const sub of opts.subagents) {
-      fs.writeFileSync(path.join(subDir, `${sub}.jsonl.gz`), zlib.gzipSync(JSON.stringify({ type: 'wire', sub }) + '\n'));
+      fs.writeFileSync(path.join(subDir, `${sub}.jsonl`), JSON.stringify({ type: 'wire', sub }) + '\n');
+      compressCaptureFile(path.join(subDir, `${sub}.jsonl`));
     }
   }
+}
+
+function capturePath(sid: string): string {
+  return path.join(captures, `cpx-${sid}.jsonl.7z`);
 }
 
 // 断言一律读 bare 仓本体（push 更新 bare 的 main；镜像的 origin/main 要等
@@ -104,32 +123,48 @@ const DESC = '提交人: 张三\n内容描述: it 上传\n日志路径: /x/cpx-s
 describe('uploadCaptureSession 直传（真 bare 仓）', () => {
   it('① 直传布局 + commit 协议 + ② 快路径压缩字节原样出仓 + ④ .gitattributes lfs 剔除', async () => {
     writeCapture('ses-e2e', { governed: true, subagents: ['sub-1'] });
-    const srcGz = fs.readFileSync(path.join(captures, 'cpx-ses-e2e.jsonl.gz'));
-    const r = await cannbay.uploadCaptureSession({ sid: 'ses-e2e', captureFile: path.join(captures, 'cpx-ses-e2e.jsonl.gz'), description: DESC, category: 'agent-sift' });
+    const srcZ = fs.readFileSync(capturePath('ses-e2e'));
+    const r = await cannbay.uploadCaptureSession({ sid: 'ses-e2e', captureFile: capturePath('ses-e2e'), description: DESC, category: 'agent-sift' });
     expect(r.folder).toBe('agent-sift/ses-e2e/');
     expect(r.gitattributesFixed).toBe(true);
     expect(r.unchanged).toBe(false);
     const files = treeAt('origin/main', 'agent-sift/ses-e2e');
-    expect(files).toContain('agent-sift/ses-e2e/ses-e2e.jsonl.gz');
+    expect(files).toContain('agent-sift/ses-e2e/ses-e2e.jsonl.7z');
     expect(files).toContain('agent-sift/ses-e2e/ses-e2e.meta.json');
-    expect(files).toContain('agent-sift/ses-e2e/subagents/sub-1.jsonl.gz');
-    // 快路径：blob 与源 gzip 逐字节一致（免解压重洗重压）
-    expect(blobBuffer('agent-sift/ses-e2e/ses-e2e.jsonl.gz').equals(srcGz)).toBe(true);
+    expect(files).toContain('agent-sift/ses-e2e/subagents/sub-1.jsonl.7z');
+    // 快路径：blob 与源 7z 逐字节一致（免解压重洗重压）
+    expect(blobBuffer('agent-sift/ses-e2e/ses-e2e.jsonl.7z').equals(srcZ)).toBe(true);
     // meta 随行（governed 标记保留）
     expect(blobContent('agent-sift/ses-e2e/ses-e2e.meta.json')).toContain('"governed":true');
     // commit 协议：subject 提交人行 + body 范式行
     const log = logBody();
     expect(log).toContain('提交人: 张三');
     expect(log.trimEnd().endsWith('范式: agent-sift')).toBe(true);
-    // .gitattributes 的 filter=lfs 行已剔除
+    // .gitattributes 的 filter=lfs 行（*.7z 与 *.gz）已剔除
     const ga = blobContent('.gitattributes');
     expect(ga).not.toContain('filter=lfs');
+  });
+
+  it('⑧ 存量 gz 迁移：旧代际 .jsonl.gz 捕获上传 → 湖内落 .jsonl.7z（内容一致）', async () => {
+    writeCapture('ses-legacy', { legacyGz: true });
+    const src = path.join(captures, 'cpx-ses-legacy.jsonl.gz');
+    const r = await cannbay.uploadCaptureSession({ sid: 'ses-legacy', captureFile: src, description: DESC, category: 'agent-sift' });
+    expect(r.unchanged).toBe(false);
+    const files = treeAt('origin/main', 'agent-sift/ses-legacy');
+    expect(files).toContain('agent-sift/ses-legacy/ses-legacy.jsonl.7z');
+    expect(files.some(f => f.endsWith('.jsonl.gz'))).toBe(false);
+    // 内容往返一致（三形态透明解压读湖内 blob）
+    fs.writeFileSync(path.join(tmp, 'probe-legacy.7z'), blobBuffer('agent-sift/ses-legacy/ses-legacy.jsonl.7z'));
+    const textAfter = readCaptureText(path.join(tmp, 'probe-legacy.7z'));
+    expect(textAfter).toContain('"type":"wire","i":0');
   });
 
   it('③ 慢路径：无 governed 标记的明文 → 清洗后压缩出仓（密钥打码）', async () => {
     writeCapture('ses-slow', { plain: true, governed: false, dirty: true });
     await cannbay.uploadCaptureSession({ sid: 'ses-slow', captureFile: path.join(captures, 'cpx-ses-slow.jsonl'), description: DESC, category: 'agent-sift' });
-    const text = zlib.gunzipSync(blobBuffer('agent-sift/ses-slow/ses-slow.jsonl.gz')).toString();
+    const blob = blobBuffer('agent-sift/ses-slow/ses-slow.jsonl.7z');
+    fs.writeFileSync(path.join(tmp, 'probe-slow.7z'), blob);
+    const text = readCaptureText(path.join(tmp, 'probe-slow.7z'));
     expect(text).not.toContain('sk-ant-abc123def456ghi789jkl012');
     expect(text).toContain('sk-a…l012');
     expect(text).not.toContain('sk-proj-abcdefghijklmnopqrstuv');
@@ -137,15 +172,15 @@ describe('uploadCaptureSession 直传（真 bare 仓）', () => {
 
   it('⑤ 范式目录动态白名单：typo / sessions 拒绝', async () => {
     writeCapture('ses-cat', {});
-    await expect(cannbay.uploadCaptureSession({ sid: 'ses-cat', captureFile: path.join(captures, 'cpx-ses-cat.jsonl.gz'), description: DESC, category: 'agent-sif' }))
+    await expect(cannbay.uploadCaptureSession({ sid: 'ses-cat', captureFile: capturePath('ses-cat'), description: DESC, category: 'agent-sif' }))
       .rejects.toThrow('不存在');
-    await expect(cannbay.uploadCaptureSession({ sid: 'ses-cat', captureFile: path.join(captures, 'cpx-ses-cat.jsonl.gz'), description: DESC, category: 'sessions' }))
+    await expect(cannbay.uploadCaptureSession({ sid: 'ses-cat', captureFile: capturePath('ses-cat'), description: DESC, category: 'sessions' }))
       .rejects.toThrow('存量会话区');
   });
 
   it('⑦ 换范式旧位置清理 + ⑦ 幂等 unchanged', async () => {
     writeCapture('ses-move', {});
-    const cap = path.join(captures, 'cpx-ses-move.jsonl.gz');
+    const cap = capturePath('ses-move');
     await cannbay.uploadCaptureSession({ sid: 'ses-move', captureFile: cap, description: DESC, category: 'agent-sift' });
     const r2 = await cannbay.uploadCaptureSession({ sid: 'ses-move', captureFile: cap, description: DESC, category: 'agent-sift' });
     expect(r2.unchanged).toBe(true);
@@ -155,7 +190,7 @@ describe('uploadCaptureSession 直传（真 bare 仓）', () => {
   it('⑥ baseline 交换：新 baseline 顶旧，旧会话移回范式普通目录', async () => {
     writeCapture('ses-base-a', {});
     writeCapture('ses-base-b', {});
-    const mk = (sid: string) => ({ sid, captureFile: path.join(captures, `cpx-${sid}.jsonl.gz`), description: DESC, category: 'agent-sift', baseline: true as const });
+    const mk = (sid: string) => ({ sid, captureFile: capturePath(sid), description: DESC, category: 'agent-sift', baseline: true as const });
     await cannbay.uploadCaptureSession(mk('ses-base-a'));
     expect(treeAt('origin/main', 'agent-sift/baseline/ses-base-a').length).toBeGreaterThan(0);
     await cannbay.uploadCaptureSession(mk('ses-base-b'));

@@ -12,6 +12,9 @@
 //    免 tsx 转换整个 CLI 的 ~0.5s 补全延迟；esbuild 经 tsx 依赖随包落地）
 // ② bash 写用户级 bash-completion 自动加载目录；zsh 仅在实际是 zsh 用户时装配
 //    （脚本指向 bundle 绝对路径，缺失回退 cpx __complete 慢路径）
+// ③ git-lfs 自举（LFS 上传默认开的硬依赖）：系统件缺失时下载 cpx 私有件，
+//    best-effort 不阻断（失败打印指引，上传时会再自动重试）；CI 与
+//    CPX_SKIP_LFS_SETUP=1 跳过（测试/流水线不打外网）。
 // 全程 best-effort：补全装不上绝不阻断安装（npm i -g 永远成功）。
 
 import { spawnSync } from 'node:child_process';
@@ -44,6 +47,10 @@ try {
   const zshUser = /zsh$/.test(process.env.SHELL ?? '') || fs.existsSync(path.join(os.homedir(), '.zshrc'));
   if (zshUser) {
     spawnSync(process.execPath, [BIN, 'completion', 'zsh', '--install'], { stdio: 'inherit' });
+  }
+
+  if (process.env.CPX_SKIP_LFS_SETUP !== '1' && process.env.CI !== 'true') {
+    spawnSync(process.execPath, [BIN, 'lfs-setup'], { stdio: 'inherit', timeout: 180_000 });
   }
 } catch {
   /* 补全失败不阻断安装 */

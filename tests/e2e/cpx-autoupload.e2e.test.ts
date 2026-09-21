@@ -12,7 +12,7 @@
 // proxy 发一次真实请求产生非空捕获），验证：
 //   ① 保留参数拦截：--autoupload/--submitter/--category 绝不透传 agent
 //   ② 全链路：压缩 → 自动导入（insight 在跑）→ 直传成功 → bare 仓 main 树
-//      含 agent-sift/<sid>/（jsonl.gz + meta），commit 首行「提交人:」
+//      含 agent-sift/<sid>/（jsonl.7z + meta），commit 首行「提交人:」
 //   ③ ★insight 未运行仍完成直传（直传核心能力）
 //   ④ 缺必选 flag 的非交互 autoupload：指路补传话术，进程退出码仍 0（捕获优先）
 //   ⑤ parseArgs 单元：保留参数任意位置消费、位置参数/转发参数原样、
@@ -34,10 +34,20 @@ let captureDir: string;
 let server: http.Server;
 let serverBase = '';
 let insightDown = false;
+let stubBin = '';
 const requests: Array<{ method: string; url: string; body: any }> = [];
 
 beforeAll(async () => {
   tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'cpx-autoupload-e2e-'));
+  // xdg-open/open 桩：自动导入成功后 cpx 真身会 openBrowser(<sid> 页)——
+  // 不拦截会在开发机真弹浏览器标签（PATH 前置，与假 npx 同款纪律）
+  stubBin = path.join(tmp, 'bin');
+  fs.mkdirSync(stubBin, { recursive: true });
+  for (const name of ['xdg-open', 'open']) {
+    const stub = path.join(stubBin, name);
+    fs.writeFileSync(stub, `#!/usr/bin/env bash\nexit 0\n`);
+    fs.chmodSync(stub, 0o755);
+  }
   bare = path.join(tmp, 'cannbay.git');
   captureDir = path.join(tmp, 'captures');
   fs.mkdirSync(captureDir, { recursive: true });
@@ -120,12 +130,16 @@ function runCpx(agent: string, extraArgs: string[], opts: { insightDown?: boolea
     const p = spawn('bash', [WRAPPER, agent, ...extraArgs], {
       env: {
         ...process.env,
+        PATH: `${stubBin}:${process.env.PATH ?? ''}`,
         CANNBOT_PROXY_DIR: captureDir,
         CANNBOT_CPX_INSIGHT_BASE: serverBase,
         CANNBOT_PROXY_OPENAI_UPSTREAM: serverBase,
         CANNBAY2_REMOTE_URL: bare,
         CANNBAY2_PUSH_URL: bare,
         CANNBAY2_CPX_CACHE_DIR: path.join(tmp, 'cache'),
+        // 钉 blob 模式：e2e 断言 bare 仓 blob 布局（LFS 默认开后未设 env 会
+        // 翻转 LFS 路径且要求 git-lfs 在机）；LFS 全链路见 cannbay-lfs.test.ts
+        CANNBAY2_LFS: '0',
         CPX_BIN: WRAPPER,
         HOME: tmp,
       },
@@ -170,7 +184,7 @@ describe('cpx <agent> --autoupload E2E（直传，真 bare 仓 + mock insight）
     const imp = requests.find(x => x.url === '/api/ingest/import-file');
     expect(imp?.body.source).toBe('claude-jsonl');
     const files = bareTree('agent-sift');
-    const sidDir = files.find(f => /agent-sift\/[^/]+\/[^/]+\.jsonl\.gz$/.test(f));
+    const sidDir = files.find(f => /agent-sift\/[^/]+\/[^/]+\.jsonl\.7z$/.test(f));
     expect(sidDir).toBeTruthy();
     const log = execSync('git -c core.quotepath=off log -1 --pretty=%s main', { cwd: bare }).toString();
     expect(log).toContain('提交人: 张三');
@@ -193,9 +207,9 @@ describe('cpx <agent> --autoupload E2E（直传，真 bare 仓 + mock insight）
     expect(r.stderr).toContain('默认 others');
     expect(r.stderr).toContain('✅ uploaded');
     const othersTree = bareTree('others');
-    expect(othersTree.find(f => /others\/[^/]+\/[^/]+\.jsonl\.gz$/.test(f))).toBeTruthy();
-    const gz = fs.readdirSync(captureDir).filter(f => f.endsWith('.jsonl.gz'));
-    expect(gz.length).toBeGreaterThanOrEqual(3);
+    expect(othersTree.find(f => /others\/[^/]+\/[^/]+\.jsonl\.7z$/.test(f))).toBeTruthy();
+    const z7 = fs.readdirSync(captureDir).filter(f => f.endsWith('.jsonl.7z'));
+    expect(z7.length).toBeGreaterThanOrEqual(3);
   }, 180_000);
 
   it('⑤ ★工作流收尾片段全链路：agent 自执行 cpx upload（env 工牌定位），退出 autoupload 静默跳过', async () => {
@@ -209,7 +223,7 @@ describe('cpx <agent> --autoupload E2E（直传，真 bare 仓 + mock insight）
     const upLog = fs.readFileSync(path.join(tmp, 'agent-self.upload.log'), 'utf8');
     expect(upLog).toContain('✅ uploaded');
     const files = bareTree('agent-sift');
-    expect(files.find(f => /agent-sift\/[^/]+\/[^/]+\.jsonl\.gz$/.test(f))).toBeTruthy();
+    expect(files.find(f => /agent-sift\/[^/]+\/[^/]+\.jsonl\.7z$/.test(f))).toBeTruthy();
     const log = execSync('git -c core.quotepath=off log -1 --pretty=%s main', { cwd: bare }).toString();
     expect(log).toContain('提交人: '); // git user.name（agent 未填提交人）
     // 退出路径 autoupload：sidecar 存在且捕获无新增 → 静默跳过，不再上传

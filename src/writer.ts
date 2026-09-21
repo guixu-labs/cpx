@@ -9,7 +9,11 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import zlib from 'node:zlib';
+import {
+  compressCaptureFile as compressTo7z,
+  decompressToPlain,
+  readCaptureText as readArchivedText,
+} from './compression';
 
 export const PROXY_DIR = process.env.CANNBOT_PROXY_DIR
   ?? path.join(os.homedir(), '.cannbot-insight', 'proxy');
@@ -67,7 +71,7 @@ export function ensureProxyDir(): void {
 }
 
 // Append one claude-format JSON line to a capture file (creating parent dirs).
-// gzip 生命周期钩子：该文件若已是压缩态（上次会话关闭时压缩、本次 resume 复用
+// 7z 生命周期钩子：该文件若已是压缩态（上次会话关闭时压缩、本次 resume 复用
 // sid），append 前解压回明文 scratch —— 之后本运行全程明文追加，退出路径
 // 重新压缩。每次 append 都 resolve（不缓存）：同进程内"压缩→再追加"（测试/
 // 长生命周期代理）也能正确展开。见 docs/COMPRESSION-DESIGN.md。
@@ -83,51 +87,41 @@ export function writeMeta(metaPath: string, meta: object): void {
   fs.writeFileSync(metaPath, JSON.stringify(meta, null, 2));
 }
 
-// ── gzip at rest（docs/COMPRESSION-DESIGN.md）──────────────────────────
-// 生命周期：live 明文追加（tail -F / 增量依赖 append）→ 会话关闭压缩
-// （cpx-cli 退出路径：压缩 → 导入）→ resume 复用 sid 时解压
-// 回明文 scratch 再追加。meta.json 永远明文（分类契约）。
+// ── 7z at rest（docs/COMPRESSION-DESIGN.md）───────────────────────────
+// 生命周期：live 明文追加（tail -F / 增量依赖 append）→ 会话关闭压缩为
+// .jsonl.7z（cpx-cli 退出路径：压缩 → 导入）→ resume 复用 sid 时解压回
+// 明文 scratch 再追加。存量 .jsonl.gz 永续可读（上传时 ensure7z 迁移）。
+// meta.json 永远明文（分类契约）。
 
-/** 解析捕获文件真实路径。优先级：明文（live/resume scratch 权威）> 压缩态。
- *  p 本身存在→p；p 是 .jsonl.gz 且对应明文存在（resume scratch 态）→明文；
- *  p 是 .jsonl 且 .jsonl.gz 存在→.gz。 */
+/** 解析捕获文件真实路径。优先级：明文（live/resume scratch 权威）> .7z（新）> .gz（存量）。 */
 export function resolveCapturePath(p: string): string {
-  // .gz 请求路径先查明文：共存 = resume scratch 态，明文是本次运行的追加目标
-  if (p.endsWith('.jsonl.gz')) {
-    const plain = p.replace(/\.gz$/, '');
+  // 压缩态请求路径先查明文：共存 = resume scratch 态，明文是本次运行的追加目标
+  if (p.endsWith('.jsonl.gz') || p.endsWith('.jsonl.7z')) {
+    const plain = p.replace(/\.(gz|7z)$/, '');
     if (fs.existsSync(plain)) return plain;
   }
   if (fs.existsSync(p)) return p;
-  if (p.endsWith('.jsonl') && fs.existsSync(`${p}.gz`)) return `${p}.gz`;
+  if (p.endsWith('.jsonl')) {
+    if (fs.existsSync(`${p}.7z`)) return `${p}.7z`;
+    if (fs.existsSync(`${p}.gz`)) return `${p}.gz`;
+  }
   return p; // 不存在（新建捕获）：调用方按返回值创建
 }
 
-/** 读捕获文件文本（.jsonl.gz 透明 gunzip；其余直读）。 */
+/** 读捕获文件文本（三形态透明解压：.7z / .gz / 明文直读）。 */
 export function readCaptureText(p: string): string {
-  const resolved = resolveCapturePath(p);
-  const buf = fs.readFileSync(resolved);
-  return resolved.endsWith('.gz') ? zlib.gunzipSync(buf).toString('utf8') : buf.toString('utf8');
+  return readArchivedText(resolveCapturePath(p));
 }
 
-/** 压缩捕获文件（明文 .jsonl → .jsonl.gz，删明文）。幂等：已 .gz 跳过。 */
+/** 压缩捕获文件（明文 .jsonl → .jsonl.7z，删明文与存量 .gz）。幂等：已压缩态跳过。 */
 export function compressCaptureFile(p: string): string {
   const resolved = resolveCapturePath(p);
-  if (resolved.endsWith('.gz')) return resolved;
+  if (resolved.endsWith('.7z') || resolved.endsWith('.gz')) return resolved;
   if (!fs.existsSync(resolved)) return resolved; // 空占位（cpx 预创建 0KB）留给调用方清理
-  const gz = `${resolved}.gz`;
-  fs.writeFileSync(gz, zlib.gzipSync(fs.readFileSync(resolved)));
-  fs.rmSync(resolved);
-  return gz;
+  return compressTo7z(resolved);
 }
 
-/** resume 准备：压缩态 → 解压回明文 scratch（删 .gz，防双份数据分叉）。幂等。 */
+/** resume 准备：压缩态（.7z/.gz）→ 解压回明文 scratch（删压缩态，防双份数据分叉）。幂等。 */
 export function ensureWritableCapture(p: string): string {
-  const resolved = resolveCapturePath(p);
-  if (resolved.endsWith('.gz')) {
-    const plain = resolved.replace(/\.gz$/, '');
-    fs.writeFileSync(plain, zlib.gunzipSync(fs.readFileSync(resolved)));
-    fs.rmSync(resolved);
-    return plain;
-  }
-  return resolved;
+  return decompressToPlain(resolveCapturePath(p));
 }
