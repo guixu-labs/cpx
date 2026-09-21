@@ -2,6 +2,11 @@
 
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 
+## [v0.1.7] - 2026-09-20
+
+### Fixed
+- 【wire 捕获 usage 记账缺失（GLM 类 anthropic 兼容网关）】此类网关把最终全量 usage 放 `message_delta`（`message_start` 只给占位 `input_tokens:0`），流重装器此前只抄 `output_tokens`——input/cache_read 全记 0，同会话 wire 捕获与原生 transcript 的 token 对账差数倍。现按非零数值字段合并（零值不覆盖，防病态 delta 抹掉 message_start 已有真值）；官方流行为不变
+
 ## [v0.1.6] - 2026-09-18
 
 ### Fixed
