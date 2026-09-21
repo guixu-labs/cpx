@@ -26,8 +26,9 @@
     "test:all": "vitest run"
   },
   "dependencies": {
-    "tsx": "^4.22.4",
+    "7zip-bin": "^5.2.0",
     "fzstd": "^0.1.1",
+    "tsx": "^4.22.4",
     "undici": "^6.28.0"
   }
 }

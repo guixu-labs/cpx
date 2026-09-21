@@ -30,13 +30,15 @@ beforeAll(() => {
 function writeCapture(sid: string, mtimeMs: number, plain = false): void {
   const file = path.join(dir, `cpx-${sid}.jsonl${plain ? '' : '.gz'}`);
   fs.writeFileSync(file, plain ? '{}\n' : zlib.gzipSync('{}\n'));
-  fs.utimesSync(file, mtimeMs, mtimeMs);
+  // utimes 接受秒/Date——传毫秒数会时间戳溢出饱和（三文件同值、排序失效）
+  const d = new Date(mtimeMs);
+  fs.utimesSync(file, d, d);
 }
 
 describe('completeCandidates 上下文', () => {
   it('首词：子命令 + agent 命令 + 顶层 flag；前缀过滤', () => {
     const all = completeCandidates(['cpx', '']);
-    for (const w of ['upload', 'list', 'status', 'config', 'completion', 'claude', 'opencode', '--agent', '--autoupload']) {
+    for (const w of ['upload', 'list', 'status', 'config', 'lfs-setup', 'completion', 'claude', 'opencode', '--agent', '--autoupload']) {
       expect(all).toContain(w);
     }
     expect(completeCandidates(['cpx', 'up'])).toEqual(['upload']);
@@ -66,9 +68,10 @@ describe('completeCandidates 上下文', () => {
     );
   });
 
-  it('normalize：sid 候选；config：dedup → on/off；status：--kill/--all', () => {
-    expect(completeCandidates(['cpx', 'config', ''])).toEqual(['dedup']);
+  it('normalize：sid 候选；config：dedup/lfs → on/off；status：--kill/--all', () => {
+    expect(completeCandidates(['cpx', 'config', ''])).toEqual(['dedup', 'lfs']);
     expect(completeCandidates(['cpx', 'config', 'dedup', ''])).toEqual(['on', 'off']);
+    expect(completeCandidates(['cpx', 'config', 'lfs', ''])).toEqual(['on', 'off']);
     expect(completeCandidates(['cpx', 'status', '-'])).toEqual(['--kill', '--all']);
   });
 
@@ -126,7 +129,8 @@ describe('completion 脚本与安装', () => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), 'cpx-postinst-'));
     const r = spawnSync('node', [path.join(path.resolve(__dirname, '../../'), 'scripts', 'postinstall.mjs')], {
       encoding: 'utf8', timeout: 60_000,
-      env: { ...process.env, HOME: home, SHELL: '/bin/bash' },
+      // 跳过 git-lfs 自举（测试不打外网；安装期自举见 lfs-setup.test.ts）
+      env: { ...process.env, HOME: home, SHELL: '/bin/bash', CPX_SKIP_LFS_SETUP: '1' },
     });
     expect(r.status).toBe(0);
     const installed = path.join(home, '.local', 'share', 'bash-completion', 'completions', 'cpx');

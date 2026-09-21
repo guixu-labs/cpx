@@ -13,7 +13,7 @@
 // strip、幂等 unchanged）——这里的 git 序列漂移即测试失败。归档轮转
 // （cannbay-archive planArchive）insight cannbay2 上传路径本就未接线，不移植。
 
-import { execSync, spawnSync } from 'node:child_process';
+import { execSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -21,6 +21,7 @@ import path from 'node:path';
 import {
   resolveCannbayRemote, stripUrlCreds, escapeRegExp, type CannbayRemote,
 } from './remote';
+import { systemGitLfsOk, privateGitLfsOk, gitSpawnEnv } from '../lfs-setup';
 
 // LFS 免疫（与 insight mirror.ts LFS_NEUTRALIZE 逐字一致，parity 锁定）：
 // 数据仓 .gitattributes 历史带 filter=lfs 行 + 客户机装 git-lfs 时，smudge
@@ -30,12 +31,14 @@ export const LFS_NEUTRALIZE = '-c filter.lfs.process= -c filter.lfs.smudge=cat -
 
 // raw = 跳过中和（LFS 模式的 add/push 专用：clean 过滤器要真跑出指针、
 // pre-push 钩子要真上传 LFS 对象）；其余命令保持中和（checkout 的 smudge=cat
-// 让既有 LFS 文件落指针文本——clean 对指针透传，re-add 不炸不重传）
+// 让既有 LFS 文件落指针文本——clean 对指针透传，re-add 不炸不重传）。
+// env 注入私有 git-lfs bin（自举件存在时前置 PATH——钩子与 filter 进程是
+// 这些 git 的子进程，继承 env 命中；缺省原样继承，行为不变）
 export function runGit(cmd: string, cwd: string, timeoutMs = 120_000, opts?: { raw?: boolean }): Buffer {
   const neutral = !opts?.raw && cmd.startsWith('git ')
     ? `git ${LFS_NEUTRALIZE} ${cmd.slice('git '.length)}`
     : cmd;
-  return execSync(neutral, { cwd, stdio: 'pipe', timeout: timeoutMs, maxBuffer: 256 * 1024 * 1024 });
+  return execSync(neutral, { cwd, stdio: 'pipe', timeout: timeoutMs, maxBuffer: 256 * 1024 * 1024, env: gitSpawnEnv() });
 }
 
 function runGitText(cmd: string, cwd: string): string {
@@ -212,14 +215,19 @@ async function withWriteLock<T>(fn: () => Promise<T>): Promise<T> {
   }
 }
 
-// ── LFS 模式（opt-in：remote.lfs，env CANNBAY2_LFS）─────────────────────
+// ── LFS 模式（默认开：remote.lfs，env 显式 > config lfsUpload > 默认）─────
 
 export function hasGitLfs(): boolean {
-  try {
-    const r = spawnSync('git', ['lfs', 'version'], { stdio: 'pipe', timeout: 10_000 });
-    return r.status === 0;
-  } catch {
-    return false;
+  // 系统件 > cpx 私有自举件（lfs-setup.ts；缺件时上传路径自动下载）
+  return systemGitLfsOk() || privateGitLfsOk();
+}
+
+/** git-lfs 在机 fail-fast：缺件报错附 cpx 侧出路（安装 / 持久关闭 /
+ *  env 一次性关闭）。uploadCaptureSession 在 staging 之前调（早失败省
+ * 白工），ensureLfsReady 仍兜底。 */
+export function requireGitLfs(): void {
+  if (!hasGitLfs()) {
+    throw new Error('LFS 模式需要 git-lfs（`git lfs version` 不可用）：请安装 git-lfs 并确保其在 PATH 中（https://git-lfs.github.com），或 cpx config lfs off / CANNBAY2_LFS=0 关闭 LFS 走普通 git 存储');
   }
 }
 
@@ -231,9 +239,7 @@ const LFS_PRE_PUSH_HOOK = '#!/bin/sh\ncommand -v git-lfs >/dev/null 2>&1 || { ec
 /** 镜像内 LFS 就绪：fail-fast git-lfs 在机检查 + 仓级 filter 配置 + pre-push
  *  钩子。幂等；不触碰全局配置（仓级配置优先级高于全局，双保险）。 */
 export function ensureLfsReady(dir: string): void {
-  if (!hasGitLfs()) {
-    throw new Error('LFS 模式需要 git-lfs（`git lfs version` 不可用）：请安装 git-lfs 并确保其在 PATH 中（https://git-lfs.github.com），或去掉 CANNBAY2_LFS 走普通 git 存储');
-  }
+  requireGitLfs();
   runGit('git config filter.lfs.process "git-lfs filter-process"', dir, 10_000, { raw: true });
   runGit('git config filter.lfs.smudge "git-lfs smudge -- %f"', dir, 10_000, { raw: true });
   runGit('git config filter.lfs.clean "git-lfs clean -- %f"', dir, 10_000, { raw: true });
@@ -245,15 +251,27 @@ export function ensureLfsReady(dir: string): void {
   }
 }
 
-// LFS 模式下确保 .gitattributes 声明 *.gz 走 LFS（缺行补一行，与默认模式
-// 的"剔除 lfs 行"互为镜像操作；模板仓自带该行则零改动）
-function ensureLfsGitattributes(dir: string): void {
+// LFS 模式下确保 .gitattributes 声明 *.7z / *.gz 走 LFS（缺行补行，与默认
+// 模式的"剔除 lfs 行"互为镜像操作；*.gz 行必须保留——湖内存量 gz blob 的
+// 指针化依赖它；模板仓自带则零改动）。导出供 IT 直测（纯 fs + git add，
+// 不依赖 git-lfs 真机件——LFS 全链路 IT 无 git-lfs 机器整组 skip，本函数
+// 的补行/去重逻辑须在无 git-lfs 环境可回归）
+export function ensureLfsGitattributes(dir: string): void {
   const gaPath = path.join(dir, '.gitattributes');
-  const want = '*.gz filter=lfs diff=lfs merge=lfs -text';
+  const wanted = ['*.7z filter=lfs diff=lfs merge=lfs -text', '*.gz filter=lfs diff=lfs merge=lfs -text'];
   let cur = '';
   try { cur = fs.readFileSync(gaPath, 'utf8'); } catch { /* 无文件 */ }
-  if (!/^\*\.gz\s+filter=lfs/m.test(cur)) {
-    fs.writeFileSync(gaPath, cur ? cur.replace(/\n*$/, '\n') + want + '\n' : `${want}\n`);
+  let changed = false;
+  let out = cur.replace(/\n*$/, cur ? '\n' : '');
+  for (const want of wanted) {
+    const pat = want.split(' ')[0].replace(/[.*]/g, c => `\\${c}`);
+    if (!new RegExp(`^${pat}\\s+filter=lfs`, 'm').test(out)) {
+      out += `${want}\n`;
+      changed = true;
+    }
+  }
+  if (changed) {
+    fs.writeFileSync(gaPath, out);
     runGit('git add .gitattributes', dir);
   }
 }
@@ -317,7 +335,7 @@ export async function uploadFolder(
     let gitattributesFixed = false;
     const gaPath = path.join(dir, '.gitattributes');
     if (remote.lfs) {
-      // LFS 模式：反向操作——确保 *.gz 声明走 LFS（缺则补），绝不剔除
+      // LFS 模式：反向操作——确保 *.7z/*.gz 声明走 LFS（缺则补），绝不剔除
       ensureLfsGitattributes(dir);
     } else if (fs.existsSync(gaPath)) {
       const ga = fs.readFileSync(gaPath, 'utf8');
@@ -330,7 +348,7 @@ export async function uploadFolder(
     }
 
     const addPaths = [targetRel, ...staleLocs.map(l => locationPath(l, sid)), ...swapPaths, ...(baseline ? [`${targetRoot}/baseline`] : [])];
-    // LFS 模式 add 不中和：clean 过滤器要把 .gz 转成 LFS 指针（对指针文本
+    // LFS 模式 add 不中和：clean 过滤器要把 .7z/.gz 转成 LFS 指针（对指针文本
     // 透传，baseline 搬移的 re-add 不重传）
     runGit(`git add ${addPaths.join(' ')}`, dir, 120_000, remote.lfs ? { raw: true } : undefined);
     const msgFile = path.join(dir, '_commit_msg.txt');

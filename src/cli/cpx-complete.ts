@@ -19,7 +19,7 @@ import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-const SUBCOMMANDS = ['list', 'ls', 'status', 'upload', 'config', 'completion'];
+const SUBCOMMANDS = ['list', 'ls', 'status', 'upload', 'config', 'lfs-setup', 'completion'];
 const AGENT_CMDS = ['claude', 'opencode', 'codex', 'cannbot'];
 const PROFILES = ['claude', 'opencode', 'cannbot', 'codex', 'openai', 'generic'];
 const TOP_FLAGS = ['--agent', '--autoupload', '--help', '--version', '-h', '-v'];
@@ -36,7 +36,7 @@ export function listCaptureSids(dir: string = captureDir()): string[] {
   let entries: fs.Dirent[];
   try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return []; }
   for (const e of entries) {
-    const m = e.name.match(/^(?:cpx-)?([\w.-]+)\.jsonl(\.gz)?$/);
+    const m = e.name.match(/^(?:cpx-)?([\w.-]+)\.jsonl(\.7z|\.gz)?$/);
     if (!m || !e.isFile()) continue;
     try {
       const st = fs.statSync(path.join(dir, e.name));
@@ -78,8 +78,8 @@ export function completeCandidates(words: string[]): string[] {
   if (SUBCOMMANDS.includes(first)) {
     if (first === 'status') return filterByPrefix(['--kill', '--all'], cur);
     if (first === 'config') {
-      if (words[2] === 'dedup') return filterByPrefix(['on', 'off'], cur);
-      return filterByPrefix(words.length <= 3 ? ['dedup'] : [], cur);
+      if (words[2] === 'dedup' || words[2] === 'lfs') return filterByPrefix(['on', 'off'], cur);
+      return filterByPrefix(words.length <= 3 ? ['dedup', 'lfs'] : [], cur);
     }
     if (first === 'upload') {
       if (cur.startsWith('-')) return filterByPrefix(UPLOAD_FLAGS, cur);
@@ -139,7 +139,10 @@ function completionBody(bin: string): string {
         case "\$first" in
           status) words="--kill --all";;
           config)
-            if [ "\${COMP_WORDS[2]}" = "dedup" ]; then words="on off"; else words="dedup"; fi;;
+            case "\${COMP_WORDS[2]}" in
+              dedup|lfs) words="on off";;
+              *) words="dedup lfs";;
+            esac;;
           upload)
             case "\$cur" in
               -*) words="${UPLOAD_FLAGS.join(' ')}";;

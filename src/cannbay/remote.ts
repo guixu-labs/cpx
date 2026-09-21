@@ -16,6 +16,7 @@ import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { PROXY_DIR } from '../writer';
 
 // env 三件套调用时惰性读取（不在模块加载时定死——vitest worker 跨测试文件
 // 共享模块缓存，先加载者会把 env 钉死在默认值；测试与运行期均按调用时刻
@@ -38,12 +39,31 @@ export function envBranch(): string {
   return process.env.CANNBAY2_BRANCH ?? 'main';
 }
 
-// LFS 模式（惰性读，与 env 三件套同款）：.jsonl.gz 以 LFS 指针出仓，实体
-// 进 LFS 存储——数据量不再计入 git 仓配额（atomgit git_repo 1GiB 硬限的
-// 出路）。要求客户机装 git-lfs（mirror.ts ensureLfsReady fail-fast）。
-export function envLfs(): boolean {
+// cpx-config.json 路径（与 dedup 同源：CANNBOT_PROXY_DIR 重定向优先——测试/
+// 多实例隔离；PROXY_DIR 默认值是 brand 字面量单一真身，pack-context 随包翻转）
+function cpxConfigFile(): string {
+  return path.join(path.dirname(process.env.CANNBOT_PROXY_DIR ?? PROXY_DIR), 'cpx-config.json');
+}
+
+export interface LfsResolution { enabled: boolean; source: 'env' | 'config' | 'default' }
+
+// LFS 模式决议链：env CANNBAY2_LFS 显式值（1/true/on 开、0/false/off 关——
+// 一次性覆写通道）> cpx-config.json 的 lfsUpload（cpx config lfs on|off 的
+// 持久选择）> 默认开。.jsonl.gz 以 LFS 指针出仓、实体进 LFS 存储——数据量
+// 不计入 git 仓配额（atomgit git_repo 1GiB 硬限的出路）。无 git-lfs 的机器
+// `cpx config lfs off` 持久关闭。惰性读（调用时刻解析 env/config，与 env
+// 三件套同款）。
+export function resolveLfs(): LfsResolution {
   const v = process.env.CANNBAY2_LFS;
-  return v === '1' || v === 'true' || v === 'on';
+  if (v === '1' || v === 'true' || v === 'on') return { enabled: true, source: 'env' };
+  if (v === '0' || v === 'false' || v === 'off') return { enabled: false, source: 'env' };
+  try {
+    const raw: unknown = JSON.parse(fs.readFileSync(cpxConfigFile(), 'utf-8'));
+    if (raw && typeof raw === 'object' && typeof (raw as { lfsUpload?: unknown }).lfsUpload === 'boolean') {
+      return { enabled: (raw as { lfsUpload: boolean }).lfsUpload, source: 'config' };
+    }
+  } catch { /* 无/坏配置文件 → 默认 */ }
+  return { enabled: true, source: 'default' };
 }
 
 export interface PushAuth {
@@ -72,7 +92,7 @@ export interface CannbayRemote {
   rootDir: string;
   cacheDir: string;
   paradigmRoots: boolean;
-  /** LFS 模式：.jsonl.gz 走 LFS 指针（env CANNBAY2_LFS；缺省 = 既有免疫行为） */
+  /** LFS 模式：.jsonl.gz 走 LFS 指针（env 显式 > config lfsUpload > 默认开） */
   lfs?: boolean;
 }
 
@@ -138,7 +158,7 @@ export function resolveCannbayRemote(): CannbayRemote {
     rootDir: 'sessions',
     cacheDir,
     paradigmRoots: true,
-    lfs: envLfs(),
+    lfs: resolveLfs().enabled,
   };
 }
 

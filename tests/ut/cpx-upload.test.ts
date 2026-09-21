@@ -19,16 +19,18 @@
 //   ⑦ description 行协议（首行提交人 / 内容描述可选行 / 日志路径 / 备注）
 
 import { describe, it, expect, beforeAll } from 'vitest';
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import zlib from 'node:zlib';
 import {
   parseUploadArgs, buildUploadDescription, resolveCaptureTarget, resolveSessionByEnv, readMetaFramework,
-  readUploadStash, writeUploadStash, captureBytes,
+  readUploadStash, writeUploadStash, captureFingerprint,
   runUpload, promptUploadInfo, type UploadFlags, type UploadDeps,
 } from '../../src/cli/cpx-upload';
 import { GovernanceError } from '../../src/cannbay/govern';
+import { compressCaptureFile } from '../../src/compression';
 
 let dir: string;
 
@@ -120,6 +122,41 @@ describe('resolveCaptureTarget / readMetaFramework', () => {
   });
 });
 
+describe('captureFingerprint（sidecar 增量判定基准）', () => {
+  it('未压缩内容 sha256：形态无关 + 内容变指纹变 + 损坏压缩态降级不静默', () => {
+    const iso = path.join(dir, 'isoFp');
+    fs.mkdirSync(iso, { recursive: true });
+    const body = '{"type":"wire","i":0}\n';
+    const sha = (b: Buffer | string) => createHash('sha256').update(b).digest('hex');
+    // 三形态同内容：明文 / 存量 .gz / 新 .7z（真实压缩件）
+    const plain = path.join(iso, 'cpx-ses-fp.jsonl');
+    fs.writeFileSync(plain, body);
+    const gz = path.join(iso, 'cpx-ses-fpg.jsonl.gz');
+    fs.writeFileSync(gz, zlib.gzipSync(body));
+    const p7 = path.join(iso, 'cpx-ses-fp7.jsonl');
+    fs.writeFileSync(p7, body);
+    const z7 = compressCaptureFile(p7);
+    const t = (f: string) => ({ sid: 'ses-fp', file: f, mtimeMs: 0 });
+    expect(captureFingerprint(t(plain))).toBe(sha(body));
+    // 形态无关：会话内 agent 自执行 cpx upload（明文快照）vs 退出 autoupload
+    // （压缩态），同内容必须同指纹——e2e ⑤ 工作流收尾片段的真实路径
+    expect(captureFingerprint(t(gz))).toBe(sha(body));
+    expect(captureFingerprint(t(z7))).toBe(sha(body));
+    // 内容变 → 指纹变（stash「无新增跳过」不误判）
+    fs.appendFileSync(plain, '{"type":"wire","i":1}\n');
+    expect(captureFingerprint(t(plain))).not.toBe(sha(body));
+    // 损坏 .7z（解压必炸）：降级 at-rest 字节指纹——非退化常量。旧实现整文件
+    // 解压/toString 在此抛错被吞计 0，stash 记 0 后「0 === 0」恒真 → 捕获变
+    // 了也静默跳过（>256MB maxBuffer / >512MB V8 字符串上限同款失败形状）
+    const bad = path.join(iso, 'cpx-ses-bad.jsonl.7z');
+    fs.writeFileSync(bad, Buffer.from('not a real 7z archive'));
+    expect(captureFingerprint(t(bad))).toBe(sha('not a real 7z archive'));
+    // 降级（at-rest）与内容态指纹天然失配：失配方向 = 重传（幂等无害），
+    // 绝不静默跳过
+    expect(captureFingerprint(t(bad))).not.toBe(captureFingerprint(t(z7)));
+  });
+});
+
 describe('buildUploadDescription 行协议', () => {
   it('首行提交人；内容描述可选行；日志路径 + 备注（框架/模型/时间）', () => {
     const target = { sid: 's1', file: '/p/cpx-s1.jsonl.gz', mtimeMs: Date.parse('2026-09-12T10:00:00Z') };
@@ -155,8 +192,8 @@ describe('runUpload 直传链路', () => {
     expect(insight.calls.find(c => c.url.includes('observe'))).toBeTruthy();
     const stash = readUploadStash(path.join(dir, 'cpx-ses-direct.jsonl.gz'));
     expect(stash).toMatchObject({ category: 'agent-sift', submitter: '张三' });
-    // 逻辑字节（解压后）：明文/压缩态可比的增量基准
-    expect(stash!.capturedBytes).toBe(zlib.gunzipSync(fs.readFileSync(path.join(dir, 'cpx-ses-direct.jsonl.gz'))).length);
+    // 变更指纹 = 未压缩内容 sha256（形态无关 + 全程 Buffer 零字符串）
+    expect(stash!.capturedSha256).toBe(createHash('sha256').update(zlib.gunzipSync(fs.readFileSync(path.join(dir, 'cpx-ses-direct.jsonl.gz')))).digest('hex'));
   });
 
   it('★sidecar 三态：无新增 → 静默跳过不调上传；有新增 → 免交互用 stash 重传（env 工牌定位）', async () => {

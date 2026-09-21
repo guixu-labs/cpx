@@ -1,29 +1,30 @@
 // Copyright (c) 2025-2026 Huawei Technologies Co., Ltd.
-// This program is free software, you can redistribute it and/or modify it under the terms of
+// This program is free software: you can redistribute it and/or modify it under the terms and conditions of
 // CANN Open Software License Agreement Version 2.0 (the "License").
 // Please refer to the License for details. You may not use this file except in compliance with the License.
 // THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
-// INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT OF MERCHANTABILITY OR FITNESS FOR A PARTICULAR PURPOSE,
+// INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
 // See LICENSE in the root of the software repository for the full text of the License.
 
 // cpx 直传治理层（与 insight cannbay2/index.ts governStagedSession 同语义）：
-//   ① 白名单（仅 .jsonl/.jsonl.gz/.json）+ 大小限（100MB 压缩态）
+//   ① 白名单（仅 .jsonl/.jsonl.7z/.jsonl.gz/.json）+ 大小限（100MB 压缩态）
 //   ② 快路径：伴生 meta 声明 producer=cpx + governed=true（cpx 退出压缩时打的
-//      信任标记）且全部 .jsonl 为 .gz —— 字节流已经 cpx 落盘咽喉 redactor
-//      全量清洗，免解压重洗重压直传（cpx 捕获的常态路径，零重复劳动）
+//      信任标记）且全部 .jsonl 为压缩态（.7z；staging ensure7z 后的常态）——
+//      字节流已经 cpx 落盘咽喉 redactor 全量清洗，免解压重洗重压直传（cpx
+//      捕获的常态路径，零重复劳动）
 //   ③ 慢路径兜底：明文源 / 无标记 / 非 cpx producer → 解压 → 清洗 + 复检
 //      （用 cpx 自己的 redactor 单一真身，与 insight 治理 parity IT 锁定
-//      同输入同输出）→ 压缩出仓；复检残留 → fail-closed 熔断拒传
+//      同输入同输出）→ 7z 压缩出仓；复检残留 → fail-closed 熔断拒传
 // 两份治理实现（insight/cpx）由 tests/cannbay-parity.test.ts 锁行为一致。
 
 import fs from 'node:fs';
 import path from 'node:path';
-import zlib from 'node:zlib';
 import { redactString, redactInPlace, matchStringRules, isSensitiveKeyName, looksMasked } from '../redactor';
+import { compressCaptureFile, decompressToPlain } from '../compression';
 
 export const MAX_SESSION_BYTES = 100 * 1024 * 1024;
 
-/** 单会话大小上限（gzip 后字节）：默认 100MB，env CANNBAY2_MAX_SESSION_MB
+/** 单会话大小上限（压缩态字节）：默认 100MB，env CANNBAY2_MAX_SESSION_MB
  *  可覆写（LFS 模式下平台限制在 LFS 对象侧，git blob 的 100MiB 钳制不再
  *  适用；普通模式勿动——atomgit pre-receive 硬拒 100MiB 以上 blob）。 */
 export function maxSessionBytes(): number {
@@ -116,17 +117,15 @@ export function governStagedSession(stagingDir: string, sid: string): void {
     return out;
   };
   const files = listFiles();
-  const unexpected = files.filter(f => !f.endsWith('.jsonl.gz') && !f.endsWith('.jsonl') && !f.endsWith('.json'));
+  const unexpected = files.filter(f => !f.endsWith('.jsonl.7z') && !f.endsWith('.jsonl.gz') && !f.endsWith('.jsonl') && !f.endsWith('.json'));
   if (unexpected.length > 0) {
-    throw new GovernanceError(`上传熔断：staging 存在白名单外文件（仅允许 .jsonl/.jsonl.gz/.json）：${unexpected.join(', ')}`);
+    throw new GovernanceError(`上传熔断：staging 存在白名单外文件（仅允许 .jsonl/.jsonl.7z/.jsonl.gz/.json）：${unexpected.join(', ')}`);
   }
-  const jsonlFiles = files.filter(f => f.endsWith('.jsonl') || f.endsWith('.jsonl.gz'));
-  // meta 伴生文件是 <sid>.meta.json（staging 必备）——此前误传 <sid>.jsonl.gz
-  // （gzip 二进制 JSON.parse 必败 → 快路径永假，governed 信任标记从未生效，
-  // 全量走慢路径解压重洗重压）
+  const jsonlFiles = files.filter(f => f.endsWith('.jsonl') || f.endsWith('.jsonl.gz') || f.endsWith('.jsonl.7z'));
+  // meta 伴生文件是 <sid>.meta.json（staging 必备）
   const meta = readCcSessionMeta(path.join(sessionDir, `${sid}.meta.json`));
   const fastPath = meta?.producer === 'cpx' && meta.governed === true
-    && jsonlFiles.length > 0 && jsonlFiles.every(f => f.endsWith('.jsonl.gz'));
+    && jsonlFiles.length > 0 && jsonlFiles.every(f => f.endsWith('.7z'));
   if (fastPath) {
     let totalBytes = 0;
     for (const rel of jsonlFiles) totalBytes += fs.statSync(path.join(sessionDir, rel)).size;
@@ -135,10 +134,8 @@ export function governStagedSession(stagingDir: string, sid: string): void {
     }
     return;
   }
-  for (const rel of files.filter(f => f.endsWith('.jsonl.gz'))) {
-    const file = path.join(sessionDir, rel);
-    fs.writeFileSync(file.replace(/\.gz$/, ''), zlib.gunzipSync(fs.readFileSync(file)));
-    fs.rmSync(file);
+  for (const rel of files.filter(f => f.endsWith('.7z') || f.endsWith('.gz'))) {
+    decompressToPlain(path.join(sessionDir, rel));
   }
   const residues: string[] = [];
   for (const rel of listFiles().filter(f => f.endsWith('.jsonl'))) {
@@ -153,12 +150,10 @@ export function governStagedSession(stagingDir: string, sid: string): void {
   let totalBytes = 0;
   for (const rel of listFiles().filter(f => f.endsWith('.jsonl'))) {
     const file = path.join(sessionDir, rel);
-    const gzFile = `${file}.gz`;
-    fs.writeFileSync(gzFile, zlib.gzipSync(fs.readFileSync(file)));
-    fs.rmSync(file);
-    totalBytes += fs.statSync(gzFile).size;
+    const z7File = compressCaptureFile(file);
+    totalBytes += fs.statSync(z7File).size;
   }
   if (totalBytes > maxSessionBytes()) {
-    throw new GovernanceError(`Session "${sid}" exceeds single-file size limit (${(totalBytes / 1024 / 1024).toFixed(1)}MB > ${(maxSessionBytes() / 1024 / 1024).toFixed(0)}MB，gzip 压缩后仍超限)`);
+    throw new GovernanceError(`Session "${sid}" exceeds single-file size limit (${(totalBytes / 1024 / 1024).toFixed(1)}MB > ${(maxSessionBytes() / 1024 / 1024).toFixed(0)}MB，7z 压缩后仍超限)`);
   }
 }

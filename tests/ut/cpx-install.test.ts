@@ -36,7 +36,9 @@ afterAll(() => {
 function runInstall(extra: string[] = []) {
   return spawnSync('bash', [INSTALL_SH, ...extra], {
     encoding: 'utf-8',
-    env: { ...process.env, CPX_BINDIR: bindir },
+    // CPX_SKIP_LFS_SETUP：install.sh 尾部的 postinstall 会做 git-lfs 自举
+    // （真下载）——测试不打外网，跳过（自举行为见 lfs-setup.test.ts）
+    env: { ...process.env, CPX_BINDIR: bindir, CPX_SKIP_LFS_SETUP: '1' },
   });
 }
 

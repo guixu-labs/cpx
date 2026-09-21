@@ -2,6 +2,19 @@
 
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 
+## [Unreleased]
+
+### Fixed
+- 【空壳会话泄漏：Ctrl+C/信号退出残留 0 字节占位捕获】SIGINT/SIGTERM handler 此前直接 process.exit 跳过收尾清理——每次信号退出都在捕获目录泄漏一个 cpx-<pinned>.jsonl 空占位 + 孤儿 .sids 清单（实测积压 3 个，`cpx status` recent captures 可见；`cpx list` 与 insight 导入扫描本就过滤空件，DB 无污染）。修复三层：① 信号路径退出前 `dropSessionScratch`（逐形态只删空件——有记录的 pinned 文件/压缩孪生是会话本体，绝不触碰）；② 启动期 `sweepLeakedPlaceholders` 扫除历史积压（活运行以 proxy 进程 CANNBOT_PROXY_SESSION_ID 判定，绝不误清进行中会话；/proc 不可用即跳过）；③ `cpx status` recent captures 过滤空件。IT：`tests/ut/cpx-scratch.test.ts`（清理/扫除语义单测 + 真 wrapper SIGINT 端到端回归锁——泄漏复现即红）
+
+### Added
+- 【压缩格式升级 gzip → 7z（LZMA2）——压缩率提升 30-50%，数据湖仓配额收益直接】捕获落盘/上传/出仓全链 `.jsonl.gz` → `.jsonl.7z`：退出压缩（`7zip-bin` npm 预编译 7za 随包，离线可用；确定性开关 `-mtm/-mta/-mtc=off` 保证同内容同字节——重传幂等不破坏）、resume 解压续捕、staging/治理/上传、LFS 声明（`.gitattributes` 同时声明 `*.7z` 与 `*.gz`，存量件照走 LFS）。**读侧三形态永续**：明文 `.jsonl` / 存量 `.jsonl.gz` / 新 `.jsonl.7z`——导入、list、补全、物化全部透明解压，用户无感。**存量 gz 迁移**：上传/补传旧 gz 捕获时 staging 统一转 7z 出仓（同 sid 重传整体替换语义天然完成湖内逐会话迁移，本地源文件不改动）。压缩级别默认 `-mx=9`，`CANNBOT_7Z_LEVEL` 可降级提速（退出压缩耗时上升约 1-5MB/s/核）。IT：`writer-compression.test.ts`（7z 生命周期/确定性/存量 gz 迁移/幂等）+ `cannbay-upload` ⑧（gz 上传 → 湖内 .7z）+ e2e 全链 `.jsonl.7z` 断言
+
+- 【git-lfs 自动自举——LFS 默认开的硬依赖补齐，安装即用】系统未装 git-lfs 时上传自动下载 cpx 私有件到 `~/.cannbot-insight/bin/git-lfs`（零提权、零全局污染：版本 pin v3.8.0 + sha256 校验，PATH 只在 cpx 自身 git 子进程注入——`runGit` 单咽喉，clean filter / pre-push 钩子作为其子进程自然命中；系统 PATH 与 gitconfig 一概不碰）。`npm install` / `install.sh` 安装期预取（CI 与 `CPX_SKIP_LFS_SETUP=1` 跳过；insight `start.sh` 启动路径也钉该 env 跳过——不阻塞 Web UI 启动关键路径），`cpx lfs-setup` 供预取/配镜像后重试；下载失败按指引三选一（`CANNBOT_CPX_LFS_BASE` 镜像重试 / 系统安装 / 关 LFS）。`cpx status` 显示 git-lfs 来源（system / cpx 私有 / 缺失）。本机实测 GitHub 直连 5.9MB 资产可超时，镜像 env 是国内网络的出路。IT：`tests/ut/lfs-setup.test.ts`（离线全链路——注入 fetch + 测试内构造真实 tar.gz 夹具 + PATH shim 遮蔽系统件；真机全链路终验拷贝真件私有化出 LFS 指针，无 git-lfs 机器自动跳过）
+
+### Changed
+- 【LFS 上传默认开启（持久化）——会话件不再计入数据仓 git 配额】`CANNBAY2_LFS` env 单开关升级为三层决议链：env 显式值（`1/true/on` 开、`0/false/off` 关，一次性覆写）> `cpx-config.json` 的 `lfsUpload`（`cpx config lfs on|off` 持久切换）> 默认开。此前默认 blob 出仓、env 未设时 LFS 从不生效——数据量被静默计入 atomgit git_repo 1GiB 硬配额。配套：git-lfs 缺件 fail-fast 检查从镜像层提前到 staging 之前（报错附安装/`cpx config lfs off`/`CANNBAY2_LFS=0` 三条出路，捕获保留本地）；`cpx status` / `cpx config` 显示 LFS 模式、生效来源与 git-lfs 在机状态；上传成功输出注明存储模式（LFS 指针 / git blob）；Tab 补全支持 `config lfs`。insight 侧（Settings UI 开关，默认关）行为不变。IT：`tests/ut/lfs-resolution.test.ts`（决议链全态 + PATH shim 缺件 fail-fast + staging 前拒绝）+ `cannbay-lfs.test.ts` 默认开指针出仓终验
+
 ## [v0.1.7] - 2026-09-20
 
 ### Fixed

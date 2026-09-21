@@ -24,7 +24,7 @@ agent 子进程 ──HTTP──▶ cpx（per-session proxy）──透传──
 - **CANNBay 一键归档（直传，无需 insight）**：`cpx <agent> --autoupload` 会话结束自动上传 CANNBay 数据之仓（治理清洗 / LFS 免疫内建，staging 直取捕获文件）；`cpx upload <sid>` 随时补传
 - **Tab 补全安装即用**：npm 安装与 install.sh 自动装配 bash/zsh 补全（sid 动态补全、静态上下文零进程 ~3ms），无需任何手动启用
 - **密钥永不落盘**：所有落盘数据经过 `redactor` 唯一咽喉清洗（结构层键名 + 字符串层厂家键形），已真机双链路验证 0 泄漏
-- **gzip at rest**：进行中明文追加（`tail -F` 可看），退出自动压缩，resume 自动解压续捕；**注入压缩**（dedup，默认关）：重注入的相同清单压成标记，只压捕获不改转发
+- **7z at rest**：进行中明文追加（`tail -F` 可看），退出自动压缩为 `.jsonl.7z`（LZMA2，比率高 gzip 30-50%；确定性产出保重传幂等），resume 自动解压续捕；存量 `.jsonl.gz` 永续可读、上传时自动迁移 7z；**注入压缩**（dedup，默认关）：重注入的相同清单压成标记，只压捕获不改转发
 
 ## 安装
 
@@ -118,17 +118,27 @@ cpx status --kill              # 清理无 sid 的孤儿 proxy 进程
 - 上传链路（staging / 治理清洗 / LFS 免疫 / git push）内建在 cpx 内，**零 insight 依赖**；insight 在跑仅作增强（预填会话首问/模型并顺带导入）
 - 任一环节失败（governance 拒绝 / 网络错误）捕获保留本地零丢失，之后 `cpx upload <sid>` 补传
 
-**LFS 模式（数据仓配额不够时）**
+**LFS 模式（默认开启——容量脱离 git 仓配额）**
 
-默认 `.jsonl.gz` 以普通 git blob 出仓（受平台 git 仓配额钳制，atomgit 实测单仓 1GiB 硬限、单文件 100MiB）。数据仓在平台侧启用 LFS 后，设置 env 即切换为 LFS 指针出仓——实体进 LFS 存储，**容量脱离 git 仓配额**：
+`.jsonl.7z` 会话件默认以 **LFS 指针**出仓（仓内 blob = 指针文本，实体进 LFS 存储），数据量不计入平台 git 仓配额（atomgit 实测单仓 1GiB 硬限、单文件 100MiB）。治理/范式/baseline/幂等全部不变（幂等在指针级判定）；`.gitattributes` 同时声明 `*.7z` 与 `*.gz`（存量 gz 件照走 LFS）。
 
 ```bash
-export CANNBAY2_LFS=1                     # opt-in：治理/范式/baseline/幂等全部不变
-export CANNBAY2_MAX_SESSION_MB=200        # 可选：放宽单会话上限（默认 100MB）
-cpx upload <sid> --category agent-sift
+cpx config lfs off               # 持久关闭（未启用 LFS 的自定义远端）
+cpx config lfs on                # 恢复默认
+CANNBAY2_LFS=0 cpx upload <sid>  # 一次性覆写（env 显式值优先于 config 文件）
+CANNBAY2_MAX_SESSION_MB=200      # 可选：放宽单会话上限（默认 100MB）
 ```
 
-要求：客户机安装 [git-lfs](https://git-lfs.github.com) 且在 PATH（缺失时明确报错指路）；镜像内自动配置仓级 filter + pre-push 钩子，不碰全局配置。注意 LFS 存储的平台配额另行计算（atomgit 个人版 LFS 需在项目设置开启，未开启时 push 会报 `project lfs not enabled`）。
+**git-lfs 自动自举**（零提权、零全局污染）：系统未装 git-lfs 时，上传会自动下载 cpx 私有件到 `~/.cannbot-insight/bin/git-lfs`（版本 pin + sha256 校验，只在 cpx 自身 git 子进程的 PATH 生效，不碰系统 PATH/gitconfig）；`npm install` / `install.sh` 安装期也会预取（CI 环境自动跳过）。下载失败（网络受限）时按指引三选一：
+
+```bash
+export CANNBOT_CPX_LFS_BASE=<镜像基址>   # ① 自建镜像（按 git-lfs releases/download
+cpx lfs-setup                            #    路径结构镜像）后重试自举
+sudo apt install git-lfs                 # ② 或系统安装（brew install git-lfs）
+cpx config lfs off                       # ③ 或关闭 LFS 走普通 git 存储
+```
+
+要求：数据仓在平台侧已启用 LFS（atomgit 个人版需在项目设置开启，未开启时 push 会报 `project lfs not enabled`）；镜像内自动配置仓级 filter + pre-push 钩子，不碰全局配置。`cpx status` 可查看 LFS 模式、生效来源（默认/config/env）与 git-lfs 来源（system/cpx 私有/缺失）。
 
 **提交信息配置**
 
@@ -198,7 +208,8 @@ cpx 对 agent 完全透明：转发请求与上游响应逐字节透传、密钥
 | `cpx list` | 捕获会话清单：sid / 大小 / 框架 / 子代理数 / 压缩状态 |
 | `cpx upload [sid] [flags]` | 补传会话到 CANNBay（直传，无需 insight；缺省 sid = 最新捕获，提交信息全默认可零参数直传，见「提交信息配置」） |
 | `cpx status [--kill [--all]]` | insight/proxy 进程状态 + 最近捕获 + 压缩率；`--kill` 清理孤儿 proxy，`--all` 连活跃会话一起清 |
-| `cpx config [dedup on\|off]` | 查看/配置注入压缩（默认 off，热生效，立即作用于进行中的会话） |
+| `cpx config [dedup on\|off] [lfs on\|off]` | 查看/配置：dedup=注入压缩（默认 off，热生效）；lfs=LFS 上传（默认 on，`.jsonl.7z` 走 LFS 指针出仓，容量脱离 git 仓配额） |
+| `cpx lfs-setup` | git-lfs 自举：系统件缺失时自动下载 cpx 私有件（sha256 校验）；上传时也会自动触发，此命令供预取/配镜像后重试 |
 | `cpx completion [bash\|zsh] [--install]` | 打印/安装 Tab 补全脚本（安装时已自动装配，此处为手动修复入口） |
 | `cpx --version \| -v` | 版本号 + 生效代码路径（多仓共存时确认当前副本）；版本源在 `src/version.ts` |
 
@@ -213,7 +224,7 @@ cpx 对 agent 完全透明：转发请求与上游响应逐字节透传、密钥
 └── <sid>/subagents/          子代理 verbatim 捕获 + meta.json（toolUseId 桥接）
 ```
 
-insight 导入与长期 serving 均直读 verbatim（`.jsonl.gz` 透明解压、`cpx-` 前缀自动剥）。旧版本的 `norm/` 镜像层已退役（与 verbatim 逐行相同的冗余副本，`cpx normalize` 命令已移除）——存量 norm/ 件不迁移不删除。
+insight 导入与长期 serving 均直读 verbatim（`.jsonl.7z` / `.jsonl.gz` 透明解压、`cpx-` 前缀自动剥）。旧版本的 `norm/` 镜像层已退役（与 verbatim 逐行相同的冗余副本，`cpx normalize` 命令已移除）——存量 norm/ 件不迁移不删除。
 
 每行是**扩展 claude-format**：claude 原生信封（`type`/`timestamp`/`message`）冻结，扩展数据进带 `(schema, version)` 声明的 `x_cannbay` 命名空间——wire 轮次（latency/ttft/请求参数）、输入标记、会话 meta、子代理 meta。格式契约详见 `docs/cannbay-schema-spec.md`（上游仓）。
 
@@ -237,9 +248,11 @@ API key / 凭据永不落盘。headers 本就不落盘；清洗的是**内容级
 | `CANNBOT_PROXY_DIR` | `~/.cannbot-insight/proxy` | 捕获目录 |
 | `CANNBOT_PROXY_OPENAI_UPSTREAM` | `https://api.openai.com` | 二进制扫描不到的 provider 的兜底 upstream |
 | `CANNBOT_CPX_INSIGHT_BASE` | `http://localhost:21025` | insight 服务地址（自动导入 / CANNBay 上传；测试用 mock insight 覆写） |
+| `CANNBAY2_LFS` | 未设（跟随 config/默认开） | LFS 上传一次性覆写：`1/true/on` 开、`0/false/off` 关（显式值优先于 cpx-config.json） |
+| `CANNBOT_CPX_LFS_BASE` | `https://github.com/git-lfs/git-lfs/releases/download` | git-lfs 自举下载基址（按 releases/download 路径结构镜像的自建源/代理；网络受限时配置后 `cpx lfs-setup` 重试） |
 | `HTTPS_PROXY` / `HTTP_PROXY` / `ALL_PROXY` | - | 用户 HTTP 代理（clash/v2ray 等），显式配置 undici ProxyAgent |
 
-运行时配置存于 `~/.cannbot-insight/cpx-config.json`（`cpx config` 管理）：目前仅 `dedupInjection`（注入压缩，默认关闭）。`CANNBOT_PROXY_*` 其余变量（PORT / SESSION_ID / PROVIDER_UPSTREAMS / …）由 cpx-cli 内部使用，无需手动设置。
+运行时配置存于 `~/.cannbot-insight/cpx-config.json`（`cpx config` 管理）：`dedupInjection`（注入压缩，默认关闭）与 `lfsUpload`（LFS 上传，默认开启——未显式设置时不落盘，跟随默认；`CANNBAY2_LFS` env 显式设值时优先于 config 文件）。`CANNBOT_PROXY_*` 其余变量（PORT / SESSION_ID / PROVIDER_UPSTREAMS / …）由 cpx-cli 内部使用，无需手动设置。
 
 ## 仓结构
 
@@ -256,7 +269,7 @@ API key / 凭据永不落盘。headers 本就不落盘；清洗的是**内容级
 │   ├── OPENCODE-DESIGN.md   #   opencode 适配（wire 实证 / provider 发现 / 前缀路由）
 │   ├── CANNBOT-DESIGN.md    #   CANNBot（cannbot CLI）适配
 │   ├── CODEX-DESIGN.md      #   Codex（Responses API）适配
-│   └── COMPRESSION-DESIGN.md#   捕获文件 gzip at rest
+│   └── COMPRESSION-DESIGN.md#   捕获文件 7z at rest
 ├── src/
 │   ├── server.ts            # 捕获代理 server（路由 / 透传 / tee / dispatchEmit 咽喉）
 │   ├── cli/cpx-cli.ts       # cpx 编排器（profile / 注入 / 退出路径）
