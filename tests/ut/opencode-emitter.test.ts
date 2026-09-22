@@ -221,3 +221,81 @@ describe('opencode-emitter: header-routed sessions (x-session-id + x-parent-sess
     expect(JSON.stringify(users[0].message.content)).toContain('新会话首问');
   });
 });
+
+// 思考流捕获（DeepSeek 系 reasoning_content → 重组器产出 thinking 块）：
+// emitter 是纯透传层，契约 = thinking 块原样落 jsonl（insight claude-jsonl
+// 转 <thinking> 文本）+ reasoning tokens 走 x_cannbay cc-wire-round 声明式
+// 通道（legacy usage 无 reasoning 字段可载）。现场 ses_f4da12dc：修复前
+// 109/182 轮 assistant 无任何文本、insight 大量 turn 没有 LLM Output。
+describe('opencode-emitter: reasoning 透传（DeepSeek 思考流）', () => {
+  it('thinking 块原样落 jsonl + cc-wire-round.reasoningTokens 声明', () => {
+    emit({
+      sid: 'ses_RSN_A',
+      protocol: 'openai' as const,
+      receivedAt: 1_000,
+      completedAt: 2_000,
+      latencyMs: 1_000,
+      ttftMs: 5,
+      request: {
+        path: '/rsn/chat/completions',
+        model: 'deepseek-v4-pro',
+        body: { messages: [
+          { role: 'system', content: 'You are opencode' },
+          { role: 'user', content: 'reasoning 捕获测试' },
+        ] },
+      },
+      response: {
+        status: 200,
+        model: 'deepseek-v4-pro',
+        stop_reason: 'tool_calls',
+        content: [
+          { type: 'thinking', thinking: '先想想再动手' },
+          { type: 'tool_use', id: 'call_rsn1', name: 'bash', input: { command: 'ls' } },
+        ],
+        usage: { input_tokens: 9, output_tokens: 7, reasoning_tokens: 5 },
+      },
+      xSessionId: 'ses_RSN_A',
+      parentSessionId: null,
+      userAgent: 'opencode/1.17.9',
+    });
+    const asst = readJsonl(sessionFilePath('ses_RSN_A')).find(r => r.type === 'assistant');
+    expect(asst).toBeDefined();
+    // thinking 块原样（位置/内容不加工 —— 转换是 insight 适配器的事）
+    expect(asst.message.content[0]).toEqual({ type: 'thinking', thinking: '先想想再动手' });
+    expect(asst.message.content.some((b: any) => b.type === 'tool_use' && b.id === 'call_rsn1')).toBe(true);
+    // usage 原样透传（reasoning_tokens 随 AnthropicUsage 扩展字段同行）
+    expect(asst.message.usage.reasoning_tokens).toBe(5);
+    // 声明式通道：insight claude-jsonl 对 cc-wire-round v1 既有 reasoningTokens 读取
+    expect(asst.x_cannbay.schema).toBe('cc-wire-round');
+    expect(asst.x_cannbay.version).toBe(1);
+    expect(asst.x_cannbay.data.reasoningTokens).toBe(5);
+  });
+
+  it('无 reasoning_tokens 的 usage → cc-wire-round 不携带 reasoningTokens 键（非 0 语义）', () => {
+    emit({
+      sid: 'ses_RSN_B',
+      protocol: 'openai' as const,
+      receivedAt: 1_000,
+      completedAt: 2_000,
+      latencyMs: 1_000,
+      ttftMs: 5,
+      request: {
+        path: '/rsn/chat/completions',
+        model: 'm',
+        body: { messages: [{ role: 'user', content: '无思考轮' }] },
+      },
+      response: {
+        status: 200,
+        model: 'm',
+        stop_reason: 'stop',
+        content: [{ type: 'text', text: 'ok' }],
+        usage: { input_tokens: 3, output_tokens: 2 },
+      },
+      xSessionId: 'ses_RSN_B',
+      parentSessionId: null,
+      userAgent: 'opencode/1.17.9',
+    });
+    const asst = readJsonl(sessionFilePath('ses_RSN_B')).find(r => r.type === 'assistant');
+    expect(asst.x_cannbay.data).not.toHaveProperty('reasoningTokens');
+  });
+});

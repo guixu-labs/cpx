@@ -165,10 +165,19 @@ class AnthropicReassembler implements Reassembler {
   }
 }
 
+// 思考字段双名兼容：reasoning_content（DeepSeek 官方/dashscope）优先，reasoning
+// 别名兜底 —— 与 opencode 内置 AI SDK 的 (reasoning_content ?? reasoning) 读取
+// 顺序逐字对齐，保证代理与客户端看到同一份思考。仅收非空 string。
+function reasoningOf(delta: Record<string, unknown>): string | null {
+  const v = delta.reasoning_content ?? delta.reasoning;
+  return typeof v === 'string' && v.length > 0 ? v : null;
+}
+
 class OpenAIReassembler implements Reassembler {
   private model: string | null = null;
   private stopReason: string | null = null;
   private text = '';
+  private reasoning = '';
   private toolCalls: { id: string; name: string; args: string }[] = [];
   private usage: AnthropicUsage | null = null;
   private buffer = '';
@@ -201,6 +210,15 @@ class OpenAIReassembler implements Reassembler {
       if (choice.finish_reason) this.stopReason = choice.finish_reason as string;
       const delta = choice.delta as Record<string, unknown> | undefined;
       if (delta) {
+        // DeepSeek 系网关思考通道：delta.reasoning_content（部分网关叫
+        // delta.reasoning），与 delta.content 并列的独立字段。opencode 内置
+        // AI SDK 读双名存为 reasoning part；漏收它 → 捕获件 assistant 只剩
+        // tool_use 无任何文本，insight 查看大量 turn 没有 LLM Output。
+        const reasoningChunk = reasoningOf(delta);
+        if (reasoningChunk) {
+          if (this.firstTokenAt === null) this.firstTokenAt = Date.now();
+          this.reasoning += reasoningChunk;
+        }
         if (delta.content || delta.tool_calls) {
           if (this.firstTokenAt === null) this.firstTokenAt = Date.now();
         }
@@ -236,12 +254,19 @@ class OpenAIReassembler implements Reassembler {
       if (details && typeof details.cached_tokens === 'number') {
         mapped.cache_read_input_tokens = details.cached_tokens;
       }
+      const compDetails = usage.completion_tokens_details as { reasoning_tokens?: number } | undefined;
+      if (compDetails && typeof compDetails.reasoning_tokens === 'number') {
+        mapped.reasoning_tokens = compDetails.reasoning_tokens;
+      }
       this.usage = mapped;
     }
   }
 
   result(): ReassembledResponse {
     const content: AnthropicContentBlock[] = [];
+    // 思考块置首：线上时序 reasoning → content → tool_calls（与 anthropic 通道
+    // thinking_delta 先行一致），insight claude-jsonl 把它转 <thinking> 文本
+    if (this.reasoning) content.push({ type: 'thinking', thinking: this.reasoning });
     if (this.text) content.push({ type: 'text', text: this.text });
     for (const tc of this.toolCalls) {
       let input: Record<string, unknown> = {};
@@ -382,4 +407,55 @@ class ResponsesApiReassembler implements Reassembler {
     }
     return { model: this.model, stop_reason: this.stopReason, content, usage: this.usage, firstTokenAt: this.firstTokenAt };
   }
+}
+
+// --- 非流式 JSON 重组（server.ts handleNonStream 调用） ---
+// 自 server.ts 迁入：server 顶层有 listen()/ensureProxyDir() 副作用，单测无法
+// 直接 import；重组逻辑归口本模块（SSE 与完整 JSON 两形态同处直测），server
+// 只留转发。行为不变，仅 openai 路径补思考通道（与流式同族修复）。
+
+export function reassembleAnthropicJson(json: Record<string, unknown>): ReassembledResponse {
+  return {
+    model: (json.model as string) ?? null,
+    stop_reason: (json.stop_reason as string) ?? null,
+    content: Array.isArray(json.content) ? json.content as AnthropicContentBlock[] : [],
+    usage: (json.usage as AnthropicUsage) ?? null,
+  };
+}
+
+export function reassembleOpenAIJson(json: Record<string, unknown>): ReassembledResponse {
+  const choices = json.choices as Array<Record<string, unknown>> | undefined;
+  const choice = choices?.[0];
+  const msg = choice?.message as Record<string, unknown> | undefined;
+  const content: AnthropicContentBlock[] = [];
+  // 思考块置首（与流式路径同构）：message.reasoning_content ?? message.reasoning
+  const reasoning = msg ? reasoningOf(msg) : null;
+  if (reasoning) content.push({ type: 'thinking', thinking: reasoning });
+  if (typeof msg?.content === 'string' && msg.content) {
+    content.push({ type: 'text', text: msg.content });
+  }
+  const toolCalls = msg?.tool_calls as Array<Record<string, unknown>> | undefined;
+  if (Array.isArray(toolCalls)) {
+    for (const tc of toolCalls) {
+      let input: Record<string, unknown> = {};
+      const fn = tc.function as { arguments?: string; name?: string } | undefined;
+      if (fn?.arguments) {
+        try { input = JSON.parse(fn.arguments); } catch { input = { _raw: fn.arguments }; }
+      }
+      content.push({ type: 'tool_use', id: tc.id as string, name: fn?.name, input });
+    }
+  }
+  const u = json.usage as Record<string, unknown> | undefined;
+  const usage = u ? {
+    input_tokens: u.prompt_tokens as number | undefined,
+    output_tokens: u.completion_tokens as number | undefined,
+    cache_read_input_tokens: (u.prompt_tokens_details as { cached_tokens?: number } | undefined)?.cached_tokens,
+    reasoning_tokens: (u.completion_tokens_details as { reasoning_tokens?: number } | undefined)?.reasoning_tokens,
+  } : null;
+  return {
+    model: (json.model as string) ?? null,
+    stop_reason: (choice?.finish_reason as string) ?? null,
+    content,
+    usage,
+  };
 }

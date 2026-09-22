@@ -23,6 +23,7 @@ import { runCompleteMain } from './cpx-complete';
 import { resolveLfs } from '../cannbay/remote';
 import { ensureLfsBinaryAvailable, gitLfsSource, lfsBinaryPath } from '../lfs-setup';
 import { dropSessionScratch, sweepLeakedPlaceholders } from './cpx-scratch';
+import { findProxyProcs, dedupePairs, isOrphanedProc, type ProxyProc } from './proxy-procs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -95,7 +96,7 @@ const USAGE = `cpx ${VERSION_DISPLAY} — agent↔模型明文捕获代理编排
                                          自动取 git 用户名，范式目录缺省默认 others，
                                          全程零交互；精确分类显式给 --category）
   cpx list                              列出全部捕获会话文件（按时间降序，只读）
-  cpx status [--kill [--all]]            查看状态；--kill 清理无 sid 的孤儿 proxy，--all 连活跃会话一起清
+  cpx status [--kill [--all]]            查看状态；--kill 清理孤儿 proxy（父进程已死的泄漏实例），--all 连活跃会话一起清
   cpx config [dedup on|off] [lfs on|off]  查看/配置；dedup=注入压缩（默认 off，热生效，只压缩捕获记录不改转发）；
                                           lfs=LFS 上传（默认 on，.jsonl.7z 以 LFS 指针出仓，容量脱离 git 仓配额）
   cpx lfs-setup                           git-lfs 自举：系统件缺失时自动下载 cpx 私有件（sha256 校验，零全局污染）；
@@ -445,81 +446,6 @@ async function triggerIngest(sid: string, jsonlPath: string): Promise<{ imported
   }
 }
 
-const PROXY_SERVER_REL = path.join('proxy', 'src', 'server.ts');
-const CLK_TCK = 100;
-
-interface ProxyProc {
-  pid: number; ppid: number | null; sid: string | null;
-  upstream: string | null; ageSec: number | null; port: number | null;
-}
-
-function readProcFile(pid: number, name: string): string | null {
-  try { return fs.readFileSync(`/proc/${pid}/${name}`, 'utf-8'); } catch { return null; }
-}
-
-function parseEnviron(s: string): Record<string, string> {
-  const e: Record<string, string> = {};
-  for (const kv of s.split('\0')) {
-    const i = kv.indexOf('=');
-    if (i > 0) e[kv.slice(0, i)] = kv.slice(i + 1);
-  }
-  return e;
-}
-
-// pid → listening port on 127.0.0.1, via `ss` (best-effort; absent → empty map).
-function readListenPorts(): Map<number, number> {
-  const m = new Map<number, number>();
-  let out = '';
-  try { out = spawnSync('ss', ['-ltnp'], { encoding: 'utf-8' }).stdout ?? ''; } catch { return m; }
-  if (!out) return m;
-  for (const line of out.split('\n')) {
-    const pm = line.match(/pid=(\d+)/);
-    const ptm = line.match(/127\.0\.0\.1:(\d+)/);
-    if (pm && ptm) {
-      const pid = parseInt(pm[1]); const port = parseInt(ptm[1]);
-      if (pid && port) m.set(pid, port);
-    }
-  }
-  return m;
-}
-
-function findProxyProcs(): ProxyProc[] {
-  let pids: number[] = [];
-  try { pids = fs.readdirSync('/proc').filter(d => /^\d+$/.test(d)).map(Number); } catch { return []; }
-  const portMap = readListenPorts();
-  let uptime: number | null = null;
-  try { uptime = parseFloat(fs.readFileSync('/proc/uptime', 'utf-8').split(/\s+/)[0]); } catch { /* */ }
-  const out: ProxyProc[] = [];
-  for (const pid of pids) {
-    const cmd = readProcFile(pid, 'cmdline');
-    if (!cmd) continue;
-    if (!cmd.replace(/\0/g, ' ').includes(PROXY_SERVER_REL)) continue;
-    const env = parseEnviron(readProcFile(pid, 'environ') ?? '');
-    let ppid: number | null = null; let ageSec: number | null = null;
-    const stat = readProcFile(pid, 'stat');
-    if (stat) {
-      const after = stat.slice(stat.lastIndexOf(')') + 2).split(/\s+/);
-      ppid = parseInt(after[1]) || null;
-      const st = parseInt(after[19]);
-      if (uptime && Number.isFinite(st)) ageSec = Math.max(0, uptime - st / CLK_TCK);
-    }
-    out.push({
-      pid, ppid,
-      sid: env.CANNBOT_PROXY_SESSION_ID ?? null,
-      upstream: env.CANNBOT_PROXY_ANTHROPIC_UPSTREAM ?? null,
-      ageSec, port: portMap.get(pid) ?? null,
-    });
-  }
-  return out.sort((a, b) => a.pid - b.pid);
-}
-
-// Dedupe the (npx-parent → node-child) pair: the npx wrapper has no port and
-// is the parent of the actual server child. Keep the child (port bearer);
-// drop port-less procs that are an ancestor of another matched proc.
-function dedupePairs(procs: ProxyProc[]): ProxyProc[] {
-  return procs.filter(p => !(p.port == null && procs.some(q => q.ppid === p.pid)));
-}
-
 async function probeUrl(url: string, ms: number): Promise<boolean> {
   try { const r = await fetch(url, { signal: AbortSignal.timeout(ms) }); return r.ok || r.status < 500; } catch { return false; }
 }
@@ -554,13 +480,15 @@ async function runStatus(opts: { kill?: boolean; all?: boolean } = {}): Promise<
   console.log(`cannbot-insight : ${insightUp ? `up   ${INSIGHT_BASE}` : 'down (capture runs without it; import via insight Web UI)'}`);
   console.log(`proxy processes : ${proxies.length} running${proxies.length === 0 ? '  (none — proxy only lives during a cpx run)' : ''}`);
   for (const p of proxies) {
-    const stale = p.sid == null ? '  [stale: no sid, likely orphaned]' : '';
+    const stale = isOrphanedProc(p, isAlive) ? '  [stale: orphaned (parent gone)]' : '';
     console.log(`  pid ${p.pid}  port ${p.port ?? '-'}  age ${fmtAge(p.ageSec)}${stale}`);
     console.log(`    sid ${p.sid ?? '-'}  upstream ${p.upstream ?? '-'}`);
   }
 
   if (opts.kill) {
-    const targets = opts.all ? proxies : proxies.filter(p => p.sid == null);
+    // env 标记模型下 sid 恒非空：孤儿 = 父进程已死（cpx-cli 退出后泄漏的
+    // proxy，重挂 init）——见 proxy-procs.ts isOrphanedProc
+    const targets = opts.all ? proxies : proxies.filter(p => isOrphanedProc(p, isAlive));
     const spared = proxies.length - targets.length;
     if (!targets.length) {
       console.log(`\nkill: nothing to ${opts.all ? 'kill (no proxy procs)' : 'kill (no stale orphans)'}`);
