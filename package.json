@@ -21,9 +21,9 @@
     "postinstall": "node scripts/postinstall.mjs",
     "proxy": "tsx src/server.ts",
     "cpx-cli": "tsx src/cli/cpx-cli.ts",
-    "test": "vitest run tests/ut",
-    "test:e2e": "vitest run tests/e2e",
-    "test:all": "vitest run"
+    "test": "bash scripts/run-tests.sh",
+    "test:e2e": "bash scripts/run-tests.sh e2e",
+    "test:all": "bash scripts/run-tests.sh && bash scripts/run-tests.sh e2e"
   },
   "dependencies": {
     "7zip-bin": "^5.2.0",
