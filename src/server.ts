@@ -11,13 +11,13 @@ import fs from 'node:fs';
 import { createRequire } from 'node:module';
 import { resolveSession, protocolFromPath } from './session-resolver';
 import { requestBodyForCapture } from './request-body-decoder';
-import { createReassembler, type ReassembledResponse } from './stream-reassembler';
+import { createReassembler, reassembleAnthropicJson, reassembleOpenAIJson, type ReassembledResponse } from './stream-reassembler';
 import { ensureProxyDir, sessionFilePath, appendSid } from './writer';
 import { emit as claudeEmit } from './claude-emitter';
 import { emit as opencodeEmit } from './opencode-emitter';
 import { emit as codexEmit } from './codex-emitter';
 import { redactRecord } from './redactor';
-import type { AnthropicContentBlock, AnthropicUsage, Protocol, ProxyRecord } from './types';
+import type { Protocol, ProxyRecord } from './types';
 
 // Route a captured record to the right emitter. The two emitters are
 // independent (no shared conversion logic) per the "two independent frameworks"
@@ -255,48 +255,6 @@ async function handleNonStream(
 
   res.writeHead(upstreamRes.status, { 'content-type': upstreamRes.headers.get('content-type') ?? 'application/json' });
   res.end(text);
-}
-
-function reassembleAnthropicJson(json: Record<string, unknown>): ReassembledResponse {
-  return {
-    model: (json.model as string) ?? null,
-    stop_reason: (json.stop_reason as string) ?? null,
-    content: Array.isArray(json.content) ? json.content as AnthropicContentBlock[] : [],
-    usage: (json.usage as AnthropicUsage) ?? null,
-  };
-}
-
-function reassembleOpenAIJson(json: Record<string, unknown>): ReassembledResponse {
-  const choices = json.choices as Array<Record<string, unknown>> | undefined;
-  const choice = choices?.[0];
-  const msg = choice?.message as Record<string, unknown> | undefined;
-  const content: AnthropicContentBlock[] = [];
-  if (typeof msg?.content === 'string' && msg.content) {
-    content.push({ type: 'text', text: msg.content });
-  }
-  const toolCalls = msg?.tool_calls as Array<Record<string, unknown>> | undefined;
-  if (Array.isArray(toolCalls)) {
-    for (const tc of toolCalls) {
-      let input: Record<string, unknown> = {};
-      const fn = tc.function as { arguments?: string; name?: string } | undefined;
-      if (fn?.arguments) {
-        try { input = JSON.parse(fn.arguments); } catch { input = { _raw: fn.arguments }; }
-      }
-      content.push({ type: 'tool_use', id: tc.id as string, name: fn?.name, input });
-    }
-  }
-  const u = json.usage as Record<string, unknown> | undefined;
-  const usage = u ? {
-    input_tokens: u.prompt_tokens as number | undefined,
-    output_tokens: u.completion_tokens as number | undefined,
-    cache_read_input_tokens: (u.prompt_tokens_details as { cached_tokens?: number } | undefined)?.cached_tokens,
-  } : null;
-  return {
-    model: (json.model as string) ?? null,
-    stop_reason: (choice?.finish_reason as string) ?? null,
-    content,
-    usage,
-  };
 }
 
 function buildRecord(

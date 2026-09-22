@@ -315,6 +315,7 @@ export function emit(rec: ProxyRecord): void {
   // `tools` are normalized OpenAI function → {name,description} for any consumer.
   const systemText = extractSystemFromMessages(body.messages);
   const tools = convertTools(body.tools);
+  const usage = mapUsage(rec.response.usage);
   const contentBlocks = Array.isArray(rec.response.content)
     ? rec.response.content as AnthropicContentBlock[]
     : [];
@@ -328,7 +329,7 @@ export function emit(rec: ProxyRecord): void {
       id: crypto.randomUUID(),
       content: contentBlocks,
       model: rec.response.model,
-      usage: mapUsage(rec.response.usage),
+      usage,
     },
     timestamp: toISO(rec.completedAt),
     system: systemText ?? undefined,
@@ -343,7 +344,7 @@ export function emit(rec: ProxyRecord): void {
     source: agent.marker,
     // x_cannbay（cc-wire-round）是以上全部信息的声明式权威源（spec §6 双轨
     // 并存，读方优先），并新增 legacy 通道没有的：roundIndex / requestParams /
-    // status / protocol。
+    // status / protocol / reasoningTokens。
     x_cannbay: xCannbay('cc-wire-round', {
       roundIndex,
       protocol: 'openai',
@@ -358,6 +359,11 @@ export function emit(rec: ProxyRecord): void {
       ttftMs: rec.ttftMs ?? undefined,
       stopReason: rec.response.stop_reason ?? undefined,
       status: rec.response.status,
+      // 思考计费 token（openai 重组器自 usage.completion_tokens_details 映射）：
+      // insight claude-jsonl 对 cc-wire-round v1 既有 reasoningTokens 读取通道，
+      // 零 insight 改动恢复 Turn reasoning tokens。undefined 时 JSON 序列化自然
+      // 省略该键（anthropic 协议路径无此字段）。
+      reasoningTokens: usage?.reasoning_tokens,
     }),
   });
 }

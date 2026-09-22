@@ -7,7 +7,7 @@
 // See LICENSE in the root of the software repository for the full text of the License.
 
 import { describe, it, expect } from 'vitest';
-import { createReassembler } from '../../src/stream-reassembler.ts';
+import { createReassembler, reassembleOpenAIJson } from '../../src/stream-reassembler.ts';
 
 function sse(events: object[]): string {
   return events.map(e => `data: ${JSON.stringify(e)}\n\n`).join('') + 'data: [DONE]\n\n';
@@ -126,6 +126,103 @@ describe('stream-reassembler: OpenAI', () => {
     expect(tc?.id).toBe('call_abc');
     expect(tc?.name).toBe('read');
     expect(tc?.input).toEqual({ path: 'foo.txt' });
+  });
+});
+
+// DeepSeek 系网关思考通道：思考内容走 delta.reasoning_content（部分网关叫
+// delta.reasoning），与 delta.content 并列的独立字段 —— opencode 内置 AI SDK
+// 读双名存为 reasoning part。漏收该字段 → 捕获件里这些 assistant 只剩
+// tool_use、无任何文本，insight 查看大量 turn 没有 LLM Output（现场
+// ses_f4da12dc：cpx 件 vs native 件按 tool_use id 对齐，109/182 轮
+// <thinking> 整块丢失）。
+describe('stream-reassembler: OpenAI reasoning（DeepSeek 思考流）', () => {
+  it('reasoning_content 多 chunk → thinking 块置首（thinking → text → tool_use 时序）+ usage reasoning_tokens', () => {
+    const r = createReassembler('openai');
+    r.feed(sse([
+      { model: 'deepseek-v4-pro', choices: [{ delta: { role: 'assistant', reasoning_content: '让我先' }, finish_reason: null }] },
+      { choices: [{ delta: { reasoning_content: '想想' }, finish_reason: null }] },
+      { choices: [{ delta: { content: '结果如下' }, finish_reason: null }] },
+      { choices: [{ delta: { tool_calls: [{ index: 0, id: 'call_r1', function: { name: 'read', arguments: '{"path":"a.ts"}' } }] }, finish_reason: null }] },
+      { choices: [{ delta: {}, finish_reason: 'tool_calls' }] },
+      { usage: { prompt_tokens: 10, completion_tokens: 7, total_tokens: 17, completion_tokens_details: { reasoning_tokens: 5 } } },
+    ]));
+    const res = r.result();
+    expect(res.content.map(c => c.type)).toEqual(['thinking', 'text', 'tool_use']);
+    expect(res.content[0]).toEqual({ type: 'thinking', thinking: '让我先想想' });
+    expect(res.content[1]).toEqual({ type: 'text', text: '结果如下' });
+    expect(res.content[2].id).toBe('call_r1');
+    expect(res.usage?.reasoning_tokens).toBe(5);
+  });
+
+  it('bug 真实形态：纯思考 + tool_calls 无正文 → [thinking, tool_use]（旧实现 thinking 整块丢失）', () => {
+    const r = createReassembler('openai');
+    r.feed(sse([
+      { choices: [{ delta: { reasoning_content: '先看实现再决定' }, finish_reason: null }] },
+      { choices: [{ delta: { tool_calls: [{ index: 0, id: 'call_r2', function: { name: 'bash', arguments: '{"command":"ls"}' } }] }, finish_reason: null }] },
+      { choices: [{ delta: {}, finish_reason: 'tool_calls' }] },
+    ]));
+    const res = r.result();
+    expect(res.content.map(c => c.type)).toEqual(['thinking', 'tool_use']);
+    expect(res.content[0].thinking).toBe('先看实现再决定');
+    expect(res.content[1].name).toBe('bash');
+  });
+
+  it('reasoning 别名字段（delta.reasoning，部分网关命名）同样累积', () => {
+    const r = createReassembler('openai');
+    r.feed(sse([
+      { choices: [{ delta: { reasoning: '别名通道' }, finish_reason: null }] },
+      { choices: [{ delta: {}, finish_reason: 'stop' }] },
+    ]));
+    expect(r.result().content).toEqual([{ type: 'thinking', thinking: '别名通道' }]);
+  });
+
+  it('ttft：仅有 reasoning delta 也触发 firstTokenAt（思考模型首个输出是思考，旧实现等到正文块 → 纯思考轮 ttft 恒 null）', () => {
+    const r = createReassembler('openai');
+    r.feed(sse([
+      { choices: [{ delta: { reasoning_content: '思' }, finish_reason: null }] },
+      { choices: [{ delta: {}, finish_reason: 'stop' }] },
+    ]));
+    expect(r.result().firstTokenAt).toBeTypeOf('number');
+  });
+});
+
+// 非流式路径（server.ts handleNonStream → reassembleOpenAIJson，自 server.ts
+// 迁入本模块后可直测）：思考通道与流式同族修复。
+describe('reassembleOpenAIJson（非流式）: reasoning 通道', () => {
+  it('message.reasoning_content → thinking 块置首 + usage reasoning_tokens', () => {
+    const res = reassembleOpenAIJson({
+      model: 'deepseek-v4-pro',
+      choices: [{
+        message: {
+          role: 'assistant',
+          content: '',
+          reasoning_content: '思考过程',
+          tool_calls: [{ id: 'call_n1', function: { name: 'read', arguments: '{"path":"x"}' } }],
+        },
+        finish_reason: 'tool_calls',
+      }],
+      usage: { prompt_tokens: 3, completion_tokens: 4, completion_tokens_details: { reasoning_tokens: 3 } },
+    });
+    expect(res.content.map(c => c.type)).toEqual(['thinking', 'tool_use']);
+    expect(res.content[0]).toEqual({ type: 'thinking', thinking: '思考过程' });
+    expect(res.content[1].id).toBe('call_n1');
+    expect(res.usage?.reasoning_tokens).toBe(3);
+  });
+
+  it('message.reasoning 别名同样收取，正文 text 块在思考块之后', () => {
+    const res = reassembleOpenAIJson({
+      choices: [{ message: { role: 'assistant', content: '答案', reasoning: '推理' }, finish_reason: 'stop' }],
+    });
+    expect(res.content.map(c => c.type)).toEqual(['thinking', 'text']);
+    expect(res.content[0].thinking).toBe('推理');
+    expect(res.content[1].text).toBe('答案');
+  });
+
+  it('无思考字段的响应不受影响（纯正文/工具形态不变）', () => {
+    const res = reassembleOpenAIJson({
+      choices: [{ message: { role: 'assistant', content: '普通回答' }, finish_reason: 'stop' }],
+    });
+    expect(res.content).toEqual([{ type: 'text', text: '普通回答' }]);
   });
 });
 
