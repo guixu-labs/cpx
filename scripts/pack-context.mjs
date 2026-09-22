@@ -74,7 +74,9 @@ function packFileList() {
   })
   if (r.status !== 0) throw new Error(`npm pack --dry-run 失败:\n${r.stderr}`)
   const parsed = JSON.parse(r.stdout)
-  return parsed[0].files.map((f) => f.path)
+  // npm ≥12 输出为按包名键的对象，旧版是数组（与 insight pack-context.mjs 同款归一化）
+  const entry = Array.isArray(parsed) ? parsed[0] : parsed[Object.keys(parsed)[0]]
+  return entry.files.map((f) => f.path)
 }
 
 function copyTree(files) {
@@ -137,7 +139,9 @@ function main() {
     cwd: STAGING, encoding: 'utf8', timeout: 180_000, maxBuffer: 32 * 1024 * 1024,
   })
   if (r.status !== 0) throw new Error(`staging npm pack 失败:\n${r.stderr}`)
-  const tgzName = JSON.parse(r.stdout)[0].filename
+  // npm ≥12 输出为按包名键的对象，旧版是数组（与上方 packFileList 同款归一化）
+  const packed = JSON.parse(r.stdout)
+  const tgzName = (Array.isArray(packed) ? packed[0] : packed[Object.keys(packed)[0]]).filename
 
   console.log(`[pack-context] 规则命中统计：`)
   for (const [find, n] of hits) if (n > 0) console.log(`  ${n}×  ${find}`)
