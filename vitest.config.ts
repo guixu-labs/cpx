@@ -13,7 +13,20 @@
 
 export default {
   test: {
+    // 输出降噪：dot 只留进度点与末尾汇总；passed-only 静默通过用例的
+    // console/stderr（git-lfs 自举提示等），失败用例的照常输出定位
+    reporters: ['dot'],
+    silent: 'passed-only',
     include: ['tests/ut/**/*.test.ts', 'tests/e2e/**/*.test.ts'],
     testTimeout: 60_000,
+    // COVERAGE=1（run-tests.sh → --coverage）：v8 provider 统计 src/ 全量；
+    // 终端只打 text-summary 摘要，逐文件明细看 lcov/html；
+    // provider 包 @vitest/coverage-v8 是本包 devDependency（vitest 二进制借
+    // insight 的，但 provider 模块从本包目录解析，须本包自带）
+    coverage: {
+      provider: 'v8',
+      include: ['src/**'],
+      reporter: ['text-summary', 'lcov', 'html'],
+    },
   },
 };
