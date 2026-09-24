@@ -6,11 +6,12 @@
 // INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT OF MERCHANTABILITY OR FITNESS FOR A PARTICULAR PURPOSE,
 // See LICENSE in the root of the software repository for the full text of the License.
 
-// Tab 补全（bash/zsh）：`cpx completion <shell>` 打印脚本，脚本把整行词表转给
-// 隐藏命令 `cpx __complete <words...>`（末词 = 正在输入的词），候选逻辑全部
-// 在 TS 内单一实现（跨 shell 一致、可测）；shell 侧只做转发。agent 命令之后
-// 不补全——那是 agent 自己的参数域（opencode 有自己的补全），cpx 越界补反而
-// 干扰；agent 域 TAB 静默（用户裁决：文件名兜底是噪音）。
+// Tab 补全（bash/zsh）：`cpx completion <shell>` 打印纯静态词表脚本（子命令
+// /agent 命令/flag 表生成时灌入——零进程、零 node 依赖，TAB ~0ms）；隐藏
+// 命令 `cpx __complete <words...>` 保留同一候选引擎（测试与脚本生成共用，
+// 无动态补全场景）。agent 命令之后不补全——那是 agent 自己的参数域
+// （opencode 有自己的补全），cpx 越界补反而干扰；agent 域 TAB 静默
+// （用户裁决：文件名兜底是噪音）。
 
 import fs from 'node:fs';
 import os from 'node:os';
@@ -19,33 +20,15 @@ import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-const SUBCOMMANDS = ['list', 'ls', 'status', 'upload', 'config', 'lfs-setup', 'completion'];
+const SUBCOMMANDS = ['list', 'ls', 'status', 'config', 'completion'];
 const AGENT_CMDS = ['claude', 'opencode', 'codex', 'cannbot'];
 const PROFILES = ['claude', 'opencode', 'cannbot', 'codex', 'openai', 'generic'];
-const TOP_FLAGS = ['--agent', '--autoupload', '--help', '--version', '-h', '-v'];
-const UPLOAD_FLAGS = ['--submitter', '--category', '--desc', '--opgen', '--baseline'];
-const VALUE_FLAGS = new Set(['--agent', '--submitter', '--desc', '--category', '--opgen']);
+const TOP_FLAGS = ['--agent', '--help', '--version', '-h', '-v'];
+const VALUE_FLAGS = new Set(['--agent']);
 
+/** 捕获目录（补全引擎展示/静态词表用）。 */
 function captureDir(): string {
   return process.env.CANNBOT_PROXY_DIR ?? path.join(os.homedir(), '.cannbot-insight', 'proxy');
-}
-
-/** 捕获会话 sid 候选：明文/压缩同 stem 去重、非空、mtime 新 → 旧。 */
-export function listCaptureSids(dir: string = captureDir()): string[] {
-  const stems = new Map<string, number>();
-  let entries: fs.Dirent[];
-  try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return []; }
-  for (const e of entries) {
-    const m = e.name.match(/^(?:cpx-)?([\w.-]+)\.jsonl(\.7z|\.gz)?$/);
-    if (!m || !e.isFile()) continue;
-    try {
-      const st = fs.statSync(path.join(dir, e.name));
-      if (st.size === 0) continue;
-      const prev = stems.get(m[1]);
-      if (prev === undefined || st.mtimeMs > prev) stems.set(m[1], st.mtimeMs);
-    } catch { /* 竞态删除忽略 */ }
-  }
-  return [...stems.entries()].sort((a, b) => b[1] - a[1]).map(([sid]) => sid);
 }
 
 function filterByPrefix(cands: string[], cur: string): string[] {
@@ -64,9 +47,8 @@ export function completeCandidates(words: string[]): string[] {
   const isTop = words.length <= 2;
   const first = !isTop ? words[1] : '';
 
-  // 值参数场景（--agent p<TAB> / --opgen s<TAB>）优先于上下文
+  // 值参数场景（--agent p<TAB>）优先于上下文
   if (prev === '--agent') return filterByPrefix(PROFILES, cur);
-  if (prev === '--opgen') return filterByPrefix(['success', 'failure'], cur);
   if (VALUE_FLAGS.has(prev)) return [];
 
   // 首词：子命令 + 常见 agent 命令 + 顶层保留参数（任意 agent 命令仍可用，
@@ -78,51 +60,26 @@ export function completeCandidates(words: string[]): string[] {
   if (SUBCOMMANDS.includes(first)) {
     if (first === 'status') return filterByPrefix(['--kill', '--all'], cur);
     if (first === 'config') {
-      if (words[2] === 'dedup' || words[2] === 'lfs') return filterByPrefix(['on', 'off'], cur);
-      return filterByPrefix(words.length <= 3 ? ['dedup', 'lfs'] : [], cur);
-    }
-    if (first === 'upload') {
-      if (cur.startsWith('-')) return filterByPrefix(UPLOAD_FLAGS, cur);
-      return filterByPrefix(listCaptureSids(), cur);
+      if (words[2] === 'dedup') return filterByPrefix(['on', 'off'], cur);
+      return filterByPrefix(words.length <= 3 ? ['dedup'] : [], cur);
     }
     return [];
   }
 
   // 非子命令 → agent 命令域（含保留参数透传场景）：不补全（TAB 静默，
-  // 文件名兜底按用户裁决移除）；顶层 --autoupload 等 flag 允许在 agent 前缀词上继续给候选
-  if (cur.startsWith('-') && words.length <= 3) return filterByPrefix(['--autoupload', '--agent'], cur);
+  // 文件名兜底按用户裁决移除）；紧随 agent 之后的首个 flag 词仍给保留 flag
+  if (cur.startsWith('-') && words.length <= 3) return filterByPrefix(['--agent'], cur);
   return [];
 }
 
 export interface CompletionResult { code: number; message?: string }
 
-function fastBundlePath(): string | null {
-  // 补全热路径：postinstall 用 esbuild 预编译的微型 bundle（纯 node 直跑，
-  // 免 tsx 运行时转换整个 CLI 导入图的 ~0.5s 税）。源码态在 src/cli/ 下，
-  // bundle 态在 dist/ 下——两种上下文各探一次
-  const candidates = [
-    path.resolve(__dirname, '../../dist/cpx-complete.mjs'),
-    path.resolve(__dirname, 'cpx-complete.mjs'),
-  ];
-   return candidates.find(p => fs.existsSync(p)) ?? null;
- }
-
-function completionCall(bin: string): string {
-  const fast = fastBundlePath();
-  const words = '"${COMP_WORDS[@]}"';
-  if (!fast) return `${bin} __complete ${words} 2>/dev/null`;
-  return `if [ -f "${fast}" ]; then node "${fast}" __complete ${words} 2>/dev/null
-  else ${bin} __complete ${words} 2>/dev/null; fi`;
-}
-
 /**
  * 补全函数体：静态上下文（首词/profile/on-off/flag 表）在生成时从上方常量
  * 灌入 bash，纯内建执行零进程（TAB ~0ms，node 冷启 130ms 只付给真正需要
- * fs 扫描的 sid 场景）；动态分支（upload 的 sid）才起 node
- * bundle。语义与 completeCandidates 逐上下文对齐（含 agent 域静默）。
+ * 子进程的场景）；语义与 completeCandidates 逐上下文对齐（含 agent 域静默）。
  */
 function completionBody(bin: string): string {
-  const dyn = completionCall(bin);
   return `  local cur prev first words
   cur="\${COMP_WORDS[COMP_CWORD]}"
   prev="\${COMP_WORDS[COMP_CWORD-1]}"
@@ -133,30 +90,22 @@ function completionBody(bin: string): string {
   else
     case "\$prev" in
       --agent) words="${PROFILES.join(' ')}";;
-      --opgen) words="success failure";;
-      --submitter|--desc|--category) words="";;
       *)
         case "\$first" in
           status) words="--kill --all";;
           config)
             case "\${COMP_WORDS[2]}" in
-              dedup|lfs) words="on off";;
-              *) words="dedup lfs";;
+              dedup) words="on off";;
+              *) words="dedup";;
             esac;;
-          upload)
-            case "\$cur" in
-              -*) words="${UPLOAD_FLAGS.join(' ')}";;
-              *) words="\$(${dyn})";;
-            esac;;
-          normalize) words="\$(${dyn})";;
           *)
             # agent 命令域静默；紧随其后的首个 flag 词仍给 cpx 保留 flag
-            case "\$cur" in -*) [ "\$COMP_CWORD" -eq 2 ] && words="--autoupload --agent";; esac;;
+            case "\$cur" in -*) [ "\$COMP_CWORD" -eq 2 ] && words="--agent";; esac;;
         esac;;
     esac
   fi
-  # 不改 IFS：compgen -W 按默认 IFS 切分（静态表空格分隔、动态 sid 换行
-  # 分隔均正确，sid 不含空格）；改成仅换行切会把整张静态表当单个候选
+  # 不改 IFS：compgen -W 按默认 IFS 切分（静态表空格分隔）；改成仅换行切
+  # 会把整张静态表当单个候选
   COMPREPLY=( \$(compgen -W "\$words" -- "\$cur") )`;
 }
 
@@ -177,14 +126,14 @@ complete -F _cpx ${bin}
 }
 
 function bashHeader(bin: string): string {
-  return `# cpx bash 补全：转发整行词表给补全引擎（末词 = 正在输入的词）
+  return `# cpx bash 补全：纯静态词表（子命令/agent/flag），无动态分支
 # 启用：eval "$(${bin} completion bash)"  或  ${bin} completion bash --install
 `;
 }
 
 function zshHeader(bin: string): string {
   return `#compdef ${bin}
-# cpx zsh 补全：bashcompinit 复用 bash 同款逻辑（候选仍由补全引擎产出）
+# cpx zsh 补全：bashcompinit 复用 bash 同款静态逻辑
 # 启用：eval "$(${bin} completion zsh)"  或  ${bin} completion zsh --install
 autoload -U +X bashcompinit && bashcompinit
 `;

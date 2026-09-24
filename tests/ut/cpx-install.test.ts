@@ -10,7 +10,7 @@
 //   ① wrapper 落到 CPX_BINDIR 且指向仓内 proxy/cpx-cli（symlink，独立于 insight 安装）
 //   ② 幂等可重跑；替换旧 start.sh 时代生成的 regular-file wrapper
 //   ③ cpx CLI 在“无 insight”前提下可用（--help 冒烟 + status 不依赖 insight 运行）
-//   ④ cpx 子命令注册正确（list 在册；import 已移除 —— 导入是 insight 自身职责）
+//   ④ cpx 子命令注册正确（list 在册）
 // CPX_BINDIR 覆盖安装目录（跳过 ~/.bashrc 修改），测试不触碰真实 PATH。
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
@@ -35,10 +35,8 @@ afterAll(() => {
 
 function runInstall(extra: string[] = []) {
   return spawnSync('bash', [INSTALL_SH, ...extra], {
-    encoding: 'utf-8',
-    // CPX_SKIP_LFS_SETUP：install.sh 尾部的 postinstall 会做 git-lfs 自举
-    // （真下载）——测试不打外网，跳过（自举行为见 lfs-setup.test.ts）
-    env: { ...process.env, CPX_BINDIR: bindir, CPX_SKIP_LFS_SETUP: '1' },
+    encoding: 'utf8',
+    env: { ...process.env, CPX_BINDIR: bindir },
   });
 }
 
@@ -74,12 +72,10 @@ describe('proxy/install.sh standalone installer', () => {
     expect(fs.realpathSync(cpx)).toBe(fs.realpathSync(REPO_WRAPPER));
   });
 
-  it('cpx --help works without insight (CLI boots; import removed, list registered)', () => {
+  it('cpx --help works without insight (CLI boots; list registered)', () => {
     const r = spawnSync(path.join(bindir, 'cpx'), ['--help'], { encoding: 'utf-8', timeout: 60_000 });
     expect(r.status).toBe(0);
     expect(r.stdout).toContain('cpx list');
-    // `cpx import` 已移除：导入统一走 insight 自身（Web UI / 捕获退出自动导入）
-    expect(r.stdout).not.toContain('cpx import');
     expect(r.stdout).toContain('捕获无需 insight');
   }, 90_000);
 

@@ -7,18 +7,14 @@
 // INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT OF MERCHANTABILITY OR FITNESS FOR A PARTICULAR PURPOSE,
 // See LICENSE in the root of the software repository for the full text of the License.
 
-// cpx 安装钩子：Tab 补全开箱即用（用户不该手动跑 completion --install）。
-// ① esbuild 预编译补全热路径 bundle（dist/cpx-complete.mjs，纯 node 直跑，
-//    免 tsx 转换整个 CLI 的 ~0.5s 补全延迟；esbuild 经 tsx 依赖随包落地）
-// ② bash 写用户级 bash-completion 自动加载目录；zsh 仅在实际是 zsh 用户时装配
-//    （脚本指向 bundle 绝对路径，缺失回退 cpx __complete 慢路径）
-// ③ git-lfs 自举（LFS 上传默认开的硬依赖）：系统件缺失时下载 cpx 私有件，
-//    best-effort 不阻断（失败打印指引，上传时会再自动重试）；CI 与
-//    CPX_SKIP_LFS_SETUP=1 跳过（测试/流水线不打外网）。
-// 全程 best-effort：补全装不上绝不阻断安装（npm i -g 永远成功）。
+// cpx install hook: wire up tab completion out of the box (users should not
+// have to run `completion --install` manually). bash installs into the
+// user-level bash-completion autoload dir; zsh only when the user actually
+// runs zsh (the completion script is a pure static word list — no dynamic
+// branches, no node dependency). Best-effort throughout: a failed completion
+// install never blocks `npm i -g`.
 
 import { spawnSync } from 'node:child_process';
-import { createRequire } from 'node:module';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -28,29 +24,10 @@ const PKG_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const BIN = path.join(PKG_DIR, 'bin', 'cpx.mjs');
 
 try {
-  try {
-    const require = createRequire(path.join(PKG_DIR, 'package.json'));
-    const esbuild = require('esbuild');
-    fs.mkdirSync(path.join(PKG_DIR, 'dist'), { recursive: true });
-    esbuild.buildSync({
-      entryPoints: [path.join(PKG_DIR, 'scripts', 'cpx-complete-main.ts')],
-      bundle: true,
-      platform: 'node',
-      format: 'esm',
-      target: 'node20',
-      outfile: path.join(PKG_DIR, 'dist', 'cpx-complete.mjs'),
-      logLevel: 'silent',
-    });
-  } catch { /* esbuild 缺失：跳过 bundle，补全回退慢路径 */ }
-
   spawnSync(process.execPath, [BIN, 'completion', 'bash', '--install'], { stdio: 'inherit' });
   const zshUser = /zsh$/.test(process.env.SHELL ?? '') || fs.existsSync(path.join(os.homedir(), '.zshrc'));
   if (zshUser) {
     spawnSync(process.execPath, [BIN, 'completion', 'zsh', '--install'], { stdio: 'inherit' });
-  }
-
-  if (process.env.CPX_SKIP_LFS_SETUP !== '1' && process.env.CI !== 'true') {
-    spawnSync(process.execPath, [BIN, 'lfs-setup'], { stdio: 'inherit', timeout: 180_000 });
   }
 } catch {
   /* 补全失败不阻断安装 */

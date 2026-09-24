@@ -86,10 +86,10 @@ const STRING_RULES: Array<{ re: RegExp; build: (m: RegExpMatchArray) => string }
   },
 ];
 
-// 复检扫描（governance 复用）：对文本逐规则重跑字符串层规则，返回每条
-// 规则的命中片段（与清洗分离的第二遍扫描——清洗后掩码形态不会再命中，
-// 任何命中都是清洗未覆盖的形态，fail-closed 熔断依据）。cannbay/govern.ts
-// 与 insight 侧 scanResidue 消费同一份规则（单一真身，parity 锁定）
+// 复检扫描：对文本逐规则重跑字符串层规则，返回每条规则的命中片段（与
+// 清洗分离的第二遍扫描——清洗后掩码形态不会再命中，任何命中都是清洗
+// 未覆盖的形态，fail-closed 熔断依据）。insight 侧 scanResidue 消费同
+// 一份规则形态（双端行为对齐由 insight 侧源级锁看护）
 export function matchStringRules(text: string): string[][] {
   return STRING_RULES.map(rule => text.match(rule.re) ?? []);
 }

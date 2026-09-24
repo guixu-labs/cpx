@@ -21,10 +21,9 @@ agent 子进程 ──HTTP──▶ cpx（per-session proxy）──透传──
 - **三协议支持**：Anthropic Messages、OpenAI Chat Completions、OpenAI Responses API，各自独立的 emitter 与 SSE 重组器
 - **子代理捕获**：claude / opencode 双路由，产物对齐 insight 原生 `subagents/` 布局
 - **多 provider 透明路由**：自动发现 opencode 各 provider 的真实 upstream（二进制扫描 + 配置），按 `/<providerId>/` 前缀精确转发
-- **CANNBay 一键归档（直传，无需 insight）**：`cpx <agent> --autoupload` 会话结束自动上传 CANNBay 数据之仓（治理清洗 / LFS 免疫内建，staging 直取捕获文件）；`cpx upload <sid>` 随时补传
-- **Tab 补全安装即用**：npm 安装与 install.sh 自动装配 bash/zsh 补全（sid 动态补全、静态上下文零进程 ~3ms），无需任何手动启用
+- **Tab 补全安装即用**：npm 安装与 install.sh 自动装配 bash/zsh 补全（静态上下文零进程 ~3ms），无需任何手动启用
 - **密钥永不落盘**：所有落盘数据经过 `redactor` 唯一咽喉清洗（结构层键名 + 字符串层厂家键形），已真机双链路验证 0 泄漏
-- **7z at rest**：进行中明文追加（`tail -F` 可看），退出自动压缩为 `.jsonl.7z`（LZMA2，比率高 gzip 30-50%；确定性产出保重传幂等），resume 自动解压续捕；存量 `.jsonl.gz` 永续可读、上传时自动迁移 7z；**注入压缩**（dedup，默认关）：重注入的相同清单压成标记，只压捕获不改转发
+- **7z at rest**：进行中明文追加（`tail -F` 可看），退出自动压缩为 `.jsonl.7z`（LZMA2，比率高 gzip 30-50%；确定性产出保重传幂等），resume 自动解压续捕；存量 `.jsonl.gz` 永续可读；**注入压缩**（dedup，默认关）：重注入的相同清单压成标记，只压捕获不改转发
 
 ## 安装
 
@@ -106,93 +105,13 @@ cpx status                                   # proxy 进程状态 + 最近捕获
 **常用进阶**
 
 ```bash
-cpx claude --autoupload         # 会话结束无感上传 CANNBay（零交互：提交人=git 用户名、目录=others）
-cpx upload                      # 补传最新会话（零参数同走默认；cpx upload <TAB> 动态补 sid）
-cpx upload <sid> --category agent-sift   # 精确分类（同 sid 换目录重传即原子迁移）
 cpx config dedup on            # 开启注入压缩（热生效，立即作用于进行中的会话）
 cpx status --kill              # 清理无 sid 的孤儿 proxy 进程
 ```
 
-**CANNBay 上传说明**
-
-- 上传链路（staging / 治理清洗 / LFS 免疫 / git push）内建在 cpx 内，**零 insight 依赖**；insight 在跑仅作增强（预填会话首问/模型并顺带导入）
-- 任一环节失败（governance 拒绝 / 网络错误）捕获保留本地零丢失，之后 `cpx upload <sid>` 补传
-
-**LFS 模式（默认开启——容量脱离 git 仓配额）**
-
-`.jsonl.7z` 会话件默认以 **LFS 指针**出仓（仓内 blob = 指针文本，实体进 LFS 存储），数据量不计入平台 git 仓配额（atomgit 实测单仓 1GiB 硬限、单文件 100MiB）。治理/范式/baseline/幂等全部不变（幂等在指针级判定）；`.gitattributes` 同时声明 `*.7z` 与 `*.gz`（存量 gz 件照走 LFS）。
-
-```bash
-cpx config lfs off               # 持久关闭（未启用 LFS 的自定义远端）
-cpx config lfs on                # 恢复默认
-CANNBAY2_LFS=0 cpx upload <sid>  # 一次性覆写（env 显式值优先于 config 文件）
-CANNBAY2_MAX_SESSION_MB=200      # 可选：放宽单会话上限（默认 100MB）
-```
-
-**git-lfs 自动自举**（零提权、零全局污染）：系统未装 git-lfs 时，上传会自动下载 cpx 私有件到 `~/.cannbot-insight/bin/git-lfs`（版本 pin + sha256 校验，只在 cpx 自身 git 子进程的 PATH 生效，不碰系统 PATH/gitconfig）；`npm install` / `install.sh` 安装期也会预取（CI 环境自动跳过）。下载失败（网络受限）时按指引三选一：
-
-```bash
-export CANNBOT_CPX_LFS_BASE=<镜像基址>   # ① 自建镜像（按 git-lfs releases/download
-cpx lfs-setup                            #    路径结构镜像）后重试自举
-sudo apt install git-lfs                 # ② 或系统安装（brew install git-lfs）
-cpx config lfs off                       # ③ 或关闭 LFS 走普通 git 存储
-```
-
-要求：数据仓在平台侧已启用 LFS（atomgit 个人版需在项目设置开启，未开启时 push 会报 `project lfs not enabled`）；镜像内自动配置仓级 filter + pre-push 钩子，不碰全局配置。`cpx status` 可查看 LFS 模式、生效来源（默认/config/env）与 git-lfs 来源（system/cpx 私有/缺失）。
-
-**提交信息配置**
-
-上传时的提交信息按"显式参数 > 会话记忆（sidecar）> 自动默认"解析，零参数即可直传：
-
-| 字段 | 显式参数 | 自动默认 | 说明 |
-|------|----------|----------|------|
-| 提交人（必选） | `--submitter 张三` | `git config user.name`（回退 `$USER`） | 数据归责到人；一般无需指定 |
-| 范式目录（必选） | `--category agent-sift` | `others` | 数据之仓的顶层目录即范式注册表；显式指定的目录不存在时报错附完整白名单，一次重试自纠 |
-| 内容描述（可选） | `--desc "一句话总结"` | 会话首问（sidecar 记忆优先） | agent 收尾上传时自己填最准 |
-| 算子生成结果（可选） | `--opgen success` / `--opgen failure` | 缺省（cannbay 列表显示 —） | 仅算子生成类工作流需要 |
-
-使用示例：
-
-```bash
-# 零参数：提交人=git 用户名、目录=others、描述=会话首问 —— 无感直传
-cpx upload
-
-# 精确分类 + 自定义描述
-cpx upload <sid> --category agent-sift --desc "修复端口冲突"
-
-# 归位：传到 others 后想换到正确范式 —— 同 sid 换目录重传即原子迁移
-cpx upload <sid> --category opgen-corpus
-
-# 算子生成工作流收尾（agent 执行）
-cpx upload --desc "完成 XX 算子生成" --opgen success
-
-# 会话结束自动上传：参数同样适用（记忆进 sidecar，退出时复用）
-cpx claude --autoupload --category agent-sift --submitter 张三
-```
-
-会话记忆（sidecar）：每次上传成功后写 `cpx-<sid>.upload.json`——后续同会话的补传 / `--autoupload` 退出路径自动复用上次的信息；捕获无新增时静默跳过，有新增免交互重传终版替换
-
-**工作流自动上传（收尾片段）**
-
-面向 agent 编排工作流：用户零参数起会话（`cpx claude --autoupload`），工作流末尾加一段收尾约定，任务完成时 agent 自行执行上传——信息各归其位（提交人=机器 git 用户、描述=agent 自述、成败=agent 自报、范式目录=模板写死或白名单自选）。把下面片段加到工作流末尾即可：
-
-```markdown
-## 会话收尾（任务完成后必须执行）
-运行：cpx upload --desc "<一句话总结本任务做了什么、结果如何>"
-
-- 范式目录默认 others；本工作流有明确归属时追加 --category <目录>
-- opgen 仅算子生成类工作流需要：追加 --opgen success 或 --opgen failure
-- 提交人自动取本机 git 用户名，无需填写
-```
-
-配套机制（全部自动，工作流作者无感）：
-
-- **会话工牌**：cpx 启动 agent 时注入 `CPX_SESSION_ID` 环境变量并沿进程树继承，agent 裸跑 `cpx upload` 即精确命中本会话（并发机器不传错别人的）；claude 等按真实 sid 落盘的框架经 `.sids` 清单自动换算
-- **上传记忆（sidecar）**：上传成功后写 `cpx-<sid>.upload.json`——退出时 `--autoupload` 复用记录免交互；捕获无新增（按解压后逻辑字节比较，明文/压缩态可比）则静默跳过；有新增自动重传终版替换快照版
-
 **Tab 补全**
 
-安装即自动装配；手动修复用 `cpx completion bash|zsh --install`。生效范围：子命令与常见 agent 命令、保留参数、`cpx upload <TAB>` 动态补真实会话 sid、`--agent` 补 profile、`config dedup` 补 on/off；agent 命令之后的参数属于 agent 自己的域，cpx 不越界补全（TAB 静默）。
+安装即自动装配；手动修复用 `cpx completion bash|zsh --install`。生效范围：子命令与常见 agent 命令、保留参数、`--agent` 补 profile、`config dedup` 补 on/off；agent 命令之后的参数属于 agent 自己的域，cpx 不越界补全（TAB 静默）。
 
 **确认捕获没有破坏 agent**
 
@@ -203,17 +122,14 @@ cpx 对 agent 完全透明：转发请求与上游响应逐字节透传、密钥
 | 命令 | 说明 |
 |------|------|
 | `cpx <agent-cmd> [args...]` | 拉起捕获栈并运行 agent（命令名自动识别 profile） |
-| `cpx <agent-cmd> --autoupload` | 会话结束自动导入并上传 CANNBay（六框架通用；TTY 向导收集必选信息） |
 | `cpx --agent <profile> -- <cmd>` | 显式指定 profile（`claude`/`opencode`/`cannbot`/`codex`/`openai`/`generic`） |
 | `cpx list` | 捕获会话清单：sid / 大小 / 框架 / 子代理数 / 压缩状态 |
-| `cpx upload [sid] [flags]` | 补传会话到 CANNBay（直传，无需 insight；缺省 sid = 最新捕获，提交信息全默认可零参数直传，见「提交信息配置」） |
 | `cpx status [--kill [--all]]` | insight/proxy 进程状态 + 最近捕获 + 压缩率；`--kill` 清理孤儿 proxy，`--all` 连活跃会话一起清 |
-| `cpx config [dedup on\|off] [lfs on\|off]` | 查看/配置：dedup=注入压缩（默认 off，热生效）；lfs=LFS 上传（默认 on，`.jsonl.7z` 走 LFS 指针出仓，容量脱离 git 仓配额） |
-| `cpx lfs-setup` | git-lfs 自举：系统件缺失时自动下载 cpx 私有件（sha256 校验）；上传时也会自动触发，此命令供预取/配镜像后重试 |
+| `cpx config [dedup on\|off]` | 查看/配置注入压缩（默认 off，热生效，只压缩捕获记录不改转发） |
 | `cpx completion [bash\|zsh] [--install]` | 打印/安装 Tab 补全脚本（安装时已自动装配，此处为手动修复入口） |
 | `cpx --version \| -v` | 版本号 + 生效代码路径（多仓共存时确认当前副本）；版本源在 `src/version.ts` |
 
-> **cpx 保留参数**（任意位置被 cpx 拦截消费，绝不透传 agent）：`--agent` `--autoupload` `--submitter` `--category` `--desc` `--opgen` `--baseline`；其余参数原样转发给 agent。
+> **cpx 保留参数**（任意位置被 cpx 拦截消费，绝不透传 agent）：`--agent` 及若干历史保留 flag（`--autoupload` `--submitter` `--category` `--desc` `--opgen` `--baseline`，静默拦截防误传 agent）；其余参数原样转发给 agent。
 
 ## 数据落点与格式
 
@@ -224,9 +140,9 @@ cpx 对 agent 完全透明：转发请求与上游响应逐字节透传、密钥
 └── <sid>/subagents/          子代理 verbatim 捕获 + meta.json（toolUseId 桥接）
 ```
 
-insight 导入与长期 serving 均直读 verbatim（`.jsonl.7z` / `.jsonl.gz` 透明解压、`cpx-` 前缀自动剥）。旧版本的 `norm/` 镜像层已退役（与 verbatim 逐行相同的冗余副本，`cpx normalize` 命令已移除）——存量 norm/ 件不迁移不删除。
+insight 导入与长期 serving 均直读 verbatim（`.jsonl.7z` / `.jsonl.gz` 透明解压、`cpx-` 前缀自动剥）。盘上历史 norm/ 件不受影响（不迁移不删除）。
 
-每行是**扩展 claude-format**：claude 原生信封（`type`/`timestamp`/`message`）冻结，扩展数据进带 `(schema, version)` 声明的 `x_cannbay` 命名空间——wire 轮次（latency/ttft/请求参数）、输入标记、会话 meta、子代理 meta。格式契约详见 `docs/cannbay-schema-spec.md`（上游仓）。
+每行是**扩展 claude-format**：claude 原生信封（`type`/`timestamp`/`message`）冻结，扩展数据进带 `(schema, version)` 声明的扩展命名空间（见 docs 下的格式契约文档）——wire 轮次（latency/ttft/请求参数）、输入标记、会话 meta、子代理 meta。格式契约详见 （格式契约文档，位于 docs/ 下）。
 
 ## 导入分析
 
@@ -247,12 +163,10 @@ API key / 凭据永不落盘。headers 本就不落盘；清洗的是**内容级
 |------|------|------|
 | `CANNBOT_PROXY_DIR` | `~/.cannbot-insight/proxy` | 捕获目录 |
 | `CANNBOT_PROXY_OPENAI_UPSTREAM` | `https://api.openai.com` | 二进制扫描不到的 provider 的兜底 upstream |
-| `CANNBOT_CPX_INSIGHT_BASE` | `http://localhost:21025` | insight 服务地址（自动导入 / CANNBay 上传；测试用 mock insight 覆写） |
-| `CANNBAY2_LFS` | 未设（跟随 config/默认开） | LFS 上传一次性覆写：`1/true/on` 开、`0/false/off` 关（显式值优先于 cpx-config.json） |
-| `CANNBOT_CPX_LFS_BASE` | `https://github.com/git-lfs/git-lfs/releases/download` | git-lfs 自举下载基址（按 releases/download 路径结构镜像的自建源/代理；网络受限时配置后 `cpx lfs-setup` 重试） |
+| `CANNBOT_CPX_INSIGHT_BASE` | `http://localhost:21025` | insight 服务地址（自动导入；测试用 mock insight 覆写） |
 | `HTTPS_PROXY` / `HTTP_PROXY` / `ALL_PROXY` | - | 用户 HTTP 代理（clash/v2ray 等），显式配置 undici ProxyAgent |
 
-运行时配置存于 `~/.cannbot-insight/cpx-config.json`（`cpx config` 管理）：`dedupInjection`（注入压缩，默认关闭）与 `lfsUpload`（LFS 上传，默认开启——未显式设置时不落盘，跟随默认；`CANNBAY2_LFS` env 显式设值时优先于 config 文件）。`CANNBOT_PROXY_*` 其余变量（PORT / SESSION_ID / PROVIDER_UPSTREAMS / …）由 cpx-cli 内部使用，无需手动设置。
+运行时配置存于 `~/.cannbot-insight/cpx-config.json`（`cpx config` 管理）：`dedupInjection`（注入压缩，默认关闭）。`CANNBOT_PROXY_*` 其余变量（PORT / SESSION_ID / PROVIDER_UPSTREAMS / …）由 cpx-cli 内部使用，无需手动设置。
 
 ## 仓结构
 
@@ -261,8 +175,7 @@ API key / 凭据永不落盘。headers 本就不落盘；清洗的是**内容级
 ├── bin/cpx.mjs              # npm bin 启动器（node --import tsx 起 TS 源码）
 ├── install.sh               # 独立安装器
 ├── scripts/
-│   ├── postinstall.mjs      # 安装钩子：Tab 补全自动装配 + 热路径 bundle 预编译
-│   ├── cpx-complete-main.ts # 补全引擎 bundle 入口（esbuild 打包目标）
+│   ├── postinstall.mjs      # 安装钩子：Tab 补全自动装配
 │   └── pack-context.mjs     # context 品牌变体打包（staging 变换 + npm pack）
 ├── docs/                    # 设计文档
 │   ├── DESIGN.md            #   总体设计（架构 / 决策 / 边界）
@@ -274,7 +187,6 @@ API key / 凭据永不落盘。headers 本就不落盘；清洗的是**内容级
 │   ├── server.ts            # 捕获代理 server（路由 / 透传 / tee / dispatchEmit 咽喉）
 │   ├── cli/cpx-cli.ts       # cpx 编排器（profile / 注入 / 退出路径）
 │   ├── cli/cpx-args.ts      # 参数解析（cpx 保留参数拦截，绝不透传 agent）
-│   ├── cli/cpx-upload.ts    # CANNBay 上传编排（cpx upload / --autoupload）
 │   ├── cli/cpx-complete.ts  # Tab 补全引擎（候选逻辑 / 脚本生成）
 │   ├── session-resolver.ts  # sid 归因（header > env pinned > 指纹）
 │   ├── stream-reassembler.ts# 三协议 SSE 重组器

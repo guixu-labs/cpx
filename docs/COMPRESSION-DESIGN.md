@@ -114,7 +114,7 @@ scratch → `resolveCapturePath` 第三分支命中，增量刷新照常读明�
   → staging 拷贝并解压为明文 .jsonl（meta 明文直拷）
   → 治理（governText 明文清洗 + 复检）           ← 可审计性保持在明文域
   → 压缩 staging .jsonl → .jsonl.7z（删明文）
-  → 大小检查按压缩后字节（atomgit 限的是这个）
+  → 大小检查按压缩后字节（平台限的是这个）
   → push（仓内 .jsonl.7z；存量 gz 源 staging ensure7z 迁移）
 ```
 

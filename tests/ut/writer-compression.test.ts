@@ -171,8 +171,7 @@ describe('writer 7z at rest', () => {
 
   it('compression parity：双端 .7z 解压点 maxBuffer 对齐 1GiB（源级锁）', () => {
     // 本轮审查抓的正是「readCaptureBuffer 修了 1GiB、同文件 decompressToPlain
-    // 漏改」——源级锁双端两个解压点的 maxBuffer 形态（读源码正则抽取，与
-    // cannbay-parity.test.ts 同款纪律），漂移/复发即红
+    // 漏改」——源级锁双端两个解压点的 maxBuffer 形态（读源码正则抽取），漂移/复发即红
     const insightSrc = fs.readFileSync(path.resolve(__dirname, '../../../insight/src/lib/compression.ts'), 'utf8');
     const dtStart = insightSrc.indexOf('export function decompressToPlain');
     const dtEnd = insightSrc.indexOf('export function readCaptureBuffer');

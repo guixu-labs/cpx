@@ -38,14 +38,13 @@ const EXCLUDE = new Set(['scripts/pack-context.mjs'])
 
 // 通用规则（全部文本文件；精确字符串替换，非正则）
 const GLOBAL_RULES = [
-  { find: "'.cannbot-insight'", replace: "'.context-insight'", minHits: 5 },
+  // 数据目录引号字面量（writer / cpx-cli / cpx-complete 三处真身）
+  { find: "'.cannbot-insight'", replace: "'.context-insight'", minHits: 3 },
   { find: '~/.cannbot-insight', replace: '~/.context-insight', minHits: 3 },
   { find: 'cannbot-insight :', replace: 'context-insight :', minHits: 1 },
   { find: 'cannbot-insight UI', replace: 'context-insight UI', minHits: 1 },
-  // Bay 显示名两种大小写形态都进通用层：src 里帮助文本/日志硬编码大写 B 的
-  // CANNBay（cpx-cli.ts / cpx-upload.ts / cannbay/index.ts），md 里两种混用；
-  // cpx 源码无 CANNBay 形态的仓 URL（insight v1 路由才有），可全局替换
-  { find: 'CANNBay', replace: 'contextBay', minHits: 1 },
+  // Bay 显示名（命中即翻转，无最低命中要求）
+  { find: 'CANNBay', replace: 'contextBay', minHits: 0 },
   { find: 'CANNbay', replace: 'contextBay', minHits: 0 },
 ]
 
