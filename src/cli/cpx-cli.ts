@@ -17,11 +17,8 @@ import { VERSION, VERSION_DISPLAY } from '../version.ts';
 import { redactString } from '../redactor.ts';
 import { parseOpencodeProvider, readAuthProvidersFromFile, readCustomProvidersFromRoots, resolveProviderIds, opencodeConfigRoots } from './opencode-providers';
 import { resolveTsxLoader } from './tsx-launcher';
-import { runUpload } from './cpx-upload';
 import { parseArgs } from './cpx-args';
 import { runCompleteMain } from './cpx-complete';
-import { resolveLfs } from '../cannbay/remote';
-import { ensureLfsBinaryAvailable, gitLfsSource, lfsBinaryPath } from '../lfs-setup';
 import { dropSessionScratch, sweepLeakedPlaceholders } from './cpx-scratch';
 import { findProxyProcs, dedupePairs, isOrphanedProc, type ProxyProc } from './proxy-procs';
 
@@ -36,18 +33,12 @@ const CPX_CONFIG_FILE = path.join(path.dirname(PROXY_DIR), 'cpx-config.json');
 interface CpxConfig {
   /** 注入压缩：记录 jsonl 时把重复的注册表/skills 注入替换为 [已压缩] 标记。默认关闭。 */
   dedupInjection: boolean;
-  /** LFS 上传：.jsonl.7z 以 LFS 指针出仓。仅用户显式设置时存在（undefined = 跟随默认开）。 */
-  lfsUpload?: boolean;
 }
 
 function loadCpxConfig(): CpxConfig {
   try {
     const raw = JSON.parse(fs.readFileSync(CPX_CONFIG_FILE, 'utf-8'));
-    const cfg: CpxConfig = { dedupInjection: raw.dedupInjection === true };
-    // lfsUpload 三态保留（undefined = 未设置）：老配置文件（仅 dedup）不得被
-    // 隐式归一成 false——那会把 dedup 用户静默打到 blob 模式
-    if (raw && typeof raw.lfsUpload === 'boolean') cfg.lfsUpload = raw.lfsUpload;
-    return cfg;
+    return { dedupInjection: raw.dedupInjection === true };
   } catch {
     return { dedupInjection: false };
   }
@@ -66,20 +57,12 @@ function runConfig(args: string[]): void {
     console.log(`dedup injection : ${cfg.dedupInjection ? 'on' : 'off'}  (已写入 ${CPX_CONFIG_FILE})`);
     return;
   }
-  if (args[0] === 'lfs' && (args[1] === 'on' || args[1] === 'off')) {
-    cfg.lfsUpload = args[1] === 'on';
-    saveCpxConfig(cfg);
-    console.log(`lfs upload      : ${cfg.lfsUpload ? 'on' : 'off'}  (已写入 ${CPX_CONFIG_FILE})`);
-    return;
-  }
   if (args.length === 0) {
-    const lfs = resolveLfs();
     console.log(`config file     : ${CPX_CONFIG_FILE}`);
     console.log(`dedup injection : ${cfg.dedupInjection ? 'on' : 'off'}   (cpx config dedup on|off 切换，热生效；压缩仅作用于捕获记录，不改动转发)`);
-    console.log(`lfs upload      : ${lfs.enabled ? 'on' : 'off'}（${lfs.source === 'default' ? '默认' : lfs.source}）  (cpx config lfs on|off 切换；.jsonl.7z 以 LFS 指针出仓，容量脱离 git 仓配额)`);
     return;
   }
-  console.error('用法: cpx config [dedup on|off] [lfs on|off]');
+  console.error('用法: cpx config [dedup on|off]');
   process.exit(2);
 }
 const CLAUDE_SETTINGS = path.join(os.homedir(), '.claude', 'settings.json');
@@ -92,29 +75,20 @@ const USAGE = `cpx ${VERSION_DISPLAY} — agent↔模型明文捕获代理编排
 用法：
   cpx <agent-cmd> [args...]              例: cpx claude / cpx codex / cpx cannbot
   cpx --agent <claude|opencode|cannbot|codex|openai|generic> -- <cmd> [args]
-  cpx <agent-cmd> --autoupload [args...] 会话结束无感上传 CANNBay（六框架通用；提交人
-                                         自动取 git 用户名，范式目录缺省默认 others，
-                                         全程零交互；精确分类显式给 --category）
   cpx list                              列出全部捕获会话文件（按时间降序，只读）
   cpx status [--kill [--all]]            查看状态；--kill 清理孤儿 proxy（父进程已死的泄漏实例），--all 连活跃会话一起清
-  cpx config [dedup on|off] [lfs on|off]  查看/配置；dedup=注入压缩（默认 off，热生效，只压缩捕获记录不改转发）；
-                                          lfs=LFS 上传（默认 on，.jsonl.7z 以 LFS 指针出仓，容量脱离 git 仓配额）
-  cpx lfs-setup                           git-lfs 自举：系统件缺失时自动下载 cpx 私有件（sha256 校验，零全局污染）；
-                                          上传时也会自动触发，此命令供预取/配镜像后重试
-  cpx upload [sid] [flags]               补传会话到 CANNBay（直传，无需 insight；缺省 sid = 最新捕获，
-                                         零参数即走默认：提交人=git 用户名、范式目录=others）。
-                                         flags：--category 精确分类 [--submitter] [--desc] [--opgen success|failure]
-  cpx completion [bash|zsh] [--install]  打印/安装 Tab 补全脚本（sid 动态补全；agent 命令之后不越界）
+  cpx config [dedup on|off]              查看/配置注入压缩（默认 off，热生效，只压缩捕获记录不改转发）
+  cpx completion [bash|zsh] [--install]  打印/安装 Tab 补全脚本（agent 命令之后不越界）
   cpx --version | -v                     版本号 + 生效代码路径（多仓共存时确认当前副本）
   cpx --help | -h                        本帮助
 
-cpx 保留参数（被 cpx 拦截消费，不透传 agent）：--agent --autoupload --submitter
---category --desc --opgen --baseline；其余参数原样转发。
+cpx 保留参数（被 cpx 拦截消费，不透传 agent）：--agent 及若干历史保留 flag；
+其余参数原样转发。
 
 在原有 claude / opencode 命令前加 cpx，其他使用完全无变化。捕获无需 insight：
-agent 退出后自动压缩 + 生成 norm/ 规范文件；insight 在运行则自动导入并开浏览器，
-否则保留捕获（\`cpx list\` 查看，导入走 insight：Web UI「Import Session → JSONL」
-选 \`~/.cannbot-insight/proxy/\` 目录）。安装：./proxy/install.sh（独立）或根
+agent 退出后自动压缩归档；insight 在运行则自动导入并开浏览器，否则保留捕获
+（\`cpx list\` 查看，导入走 insight：Web UI「Import Session → JSONL」选
+\`~/.cannbot-insight/proxy/\` 目录）。安装：./proxy/install.sh（独立）或根
 目录 ./start.sh（一体化，内部调用前者）。`;
 
 type AgentProfile = 'claude' | 'opencode' | 'cannbot' | 'codex' | 'openai' | 'generic';
@@ -418,6 +392,11 @@ function buildLaunch(profile: AgentProfile, proxyPort: number, claude: ClaudeSet
 }
 
 function openBrowser(url: string): void {
+  // 测试环境熔断（结构性防弹窗）：vitest worker 及其全部子进程（wrapper →
+  // agent）继承 VITEST env；显式 kill-switch 优先。PATH 桩方案对 WSL 的
+  // cmd.exe 分支结构性无效（绝对路径 exec，PATH 拦不住——实测 autoupload
+  // e2e 三场景真弹浏览器，2026-09-22）
+  if (process.env.CANNBOT_NO_BROWSER || process.env.VITEST) return;
   try {
     if (fs.existsSync('/proc/version') && fs.readFileSync('/proc/version', 'utf-8').toLowerCase().includes('microsoft')
         && fs.existsSync('/mnt/c/Windows/System32/cmd.exe')) {
@@ -503,16 +482,6 @@ async function runStatus(opts: { kill?: boolean; all?: boolean } = {}): Promise<
 
   console.log(`captures dir    : ${PROXY_DIR}`);
   console.log(`dedup injection : ${loadCpxConfig().dedupInjection ? 'on' : 'off'}  (cpx config dedup on|off)`);
-  const lfs = resolveLfs();
-  const src = gitLfsSource();
-  const lfsNote = !lfs.enabled
-    ? '(cpx config lfs on 开启)'
-    : src === 'system'
-      ? 'git-lfs system'
-      : src === 'private'
-        ? `git-lfs cpx 私有（${lfsBinaryPath()}）`
-        : 'git-lfs 缺失——上传时自动获取（cpx lfs-setup 可预取/重试）';
-  console.log(`lfs upload      : ${lfs.enabled ? 'on' : 'off'}（${lfs.source === 'default' ? '默认' : lfs.source}）  ${lfsNote}`);
   let caps: { f: string; size: number; mt: number }[] = [];
   try {
     caps = fs.readdirSync(PROXY_DIR)
@@ -687,24 +656,8 @@ async function main(): Promise<void> {
     runConfig(process.argv.slice(3));
     return;
   }
-  if (sub === 'lfs-setup') {
-    try {
-      const r = await ensureLfsBinaryAvailable();
-      console.log(r.source === 'system'
-        ? `git-lfs : system 已安装（无需自举）`
-        : `git-lfs : cpx 私有件就绪 → ${lfsBinaryPath()}${r.downloaded ? '（本次自动获取）' : ''}`);
-    } catch (e) {
-      console.error(e instanceof Error ? e.message : String(e));
-      process.exitCode = 1;
-    }
-    return;
-  }
-  if (sub === 'upload') {
-    process.exitCode = await runUpload(process.argv.slice(3));
-    return;
-  }
   if (sub === 'completion' || sub === '__complete') {
-    // 补全引擎共用入口（与 dist/cpx-complete.mjs bundle 同一实现）
+    // 补全引擎共用入口（脚本生成与测试消费同一实现）
     process.exitCode = runCompleteMain(process.argv.slice(2));
     return;
   }
@@ -712,25 +665,7 @@ async function main(): Promise<void> {
     runList();
     return;
   }
-  // `cpx import` 已移除（与 insight 自身导入能力重复）：老习惯敲进来时指路，
-  // 而不是把它当 agent 命令 spawn 报 ENOENT。
-  if (sub === 'import') {
-    log('`cpx import` 已移除 —— 导入是 insight 自身的职责：');
-    log('  · insight 在运行时，捕获退出即自动导入并开浏览器');
-    log('  · 手动导入：insight Web UI「Import Session → JSONL」选 ~/.cannbot-insight/proxy/ 目录');
-    log('  · 查看捕获清单：cpx list');
-    process.exit(2);
-  }
-  // `cpx normalize` 已移除（norm/ 镜像层退役：与 verbatim 逐行相同的冗余
-  // 副本，insight 直读 verbatim 导入与 serving）：老习惯敲进来时指路，
-  // 而不是把它当 agent 命令 spawn 报 ENOENT。存量 norm/ 件不迁移不删除。
-  if (sub === 'normalize') {
-    log('`cpx normalize` 已移除 —— norm/ 镜像层退役（insight 直读 verbatim，无需规范文件）：');
-    log('  · 导入：insight Web UI「Import Session → JSONL」或捕获退出自动导入');
-    log('  · 盘上存量 norm/ 文件不受影响（不迁移不删除）');
-    process.exit(2);
-  }
-  const { profile, agentCmd, agentArgs, uploadArgs, autoUpload } = parseArgs(process.argv);
+  const { profile, agentCmd, agentArgs } = parseArgs(process.argv);
   if (!agentCmd) {
     console.error(USAGE);
     process.exit(2);
@@ -988,10 +923,9 @@ async function main(): Promise<void> {
       : profile === 'opencode' || profile === 'cannbot' ? opencodeNativePaths()
       : null;
     if (agentLog) log(`  agent log: ${agentLog}`);
-    // 直接导入 verbatim 捕获（norm/ 镜像层已退役）：adapter 双形态透明解压，
-    // taskId 用清单里的真实 sid（无 cpx- 前缀），subagents 按 <sid>/subagents/
-    // 布局发现。sourcePath 一次定型为压缩态 verbatim。存量 norm/ 件不迁移
-    // 不删除（`cpx normalize` 降级为兼容命令，按需手动重生成）。
+    // 直接导入 verbatim 捕获：adapter 双形态透明解压，taskId 用清单里的
+    // 真实 sid（无 cpx- 前缀），subagents 按 <sid>/subagents/ 布局发现，
+    // sourcePath 一次定型为压缩态 verbatim。
     const importPath = pGz;
     if (!importLive) continue;
     log(`  importing: ${importPath}`);
@@ -1002,17 +936,6 @@ async function main(): Promise<void> {
   if (lastUrl) {
     log(`✅ imported → opening ${lastUrl}`);
     openBrowser(lastUrl);
-  }
-  // --autoupload：逐会话直传 CANNBay（零 insight 依赖）。复用 runUpload
-  // （直传 + TTY 向导 + governance 透传；insight 在跑仅增强预填/顺带导入）；
-  // 信息不全时 runUpload 自行指路（cpx upload <sid> 补传），捕获已在本地，
-  // 不因上传失败改退出码
-  if (autoUpload) {
-    for (const { sid: captureSid } of produced) {
-      log(`autoupload: ${captureSid}`);
-      const code = await runUpload([captureSid, ...uploadArgs]);
-      if (code !== 0) log(`autoupload 未完成（exit ${code}）—— 捕获保留本地，稍后可 cpx upload ${captureSid} 补传`);
-    }
   }
   process.exit(0);
 }

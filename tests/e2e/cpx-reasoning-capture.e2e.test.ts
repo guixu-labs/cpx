@@ -98,6 +98,8 @@ function runCpx(): Promise<{ code: number; output: string }> {
         CANNBOT_PROXY_OPENAI_UPSTREAM: upstream,
         // 钉死不可达：不机会主义导入开发机在跑的真 insight、不开浏览器
         CANNBOT_CPX_INSIGHT_BASE: 'http://127.0.0.1:1',
+        // belt+braces：openBrowser 熔断守卫（browser-guard.test.ts 源级锁消费本行）
+        CANNBOT_NO_BROWSER: '1',
         HOME: TMP,
       },
       stdio: ['ignore', 'pipe', 'pipe'],

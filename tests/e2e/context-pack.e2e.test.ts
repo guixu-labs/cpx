@@ -81,8 +81,8 @@ describe('context 品牌变体打包（pack-context.mjs）', () => {
 
   it('捕获与缓存目录默认值翻转（与 context-insight 数据目录配对）', () => {
     expect(read('src/writer.ts')).toContain("'.context-insight'")
-    expect(read('src/cli/cpx-upload.ts')).toContain("'.context-insight'")
-    expect(read('src/cannbay/remote.ts')).toContain("'.context-insight'")
+    expect(read('src/cli/cpx-cli.ts')).toContain("'.context-insight'")
+    expect(read('src/cli/cpx-complete.ts')).toContain("'.context-insight'")
   })
 
   it('品牌泄漏哨兵：显示名 / Bay 名（大小写两种形态）/ 数据目录路径零残留', () => {
@@ -93,6 +93,5 @@ describe('context 品牌变体打包（pack-context.mjs）', () => {
   it('格式契约保留：x_cannbay 命名空间 / CANNBOT_PROXY_DIR 环境变量', () => {
     expect(read('src/claude-emitter.ts')).toContain('x_cannbay')
     expect(read('src/writer.ts')).toContain('CANNBOT_PROXY_DIR')
-    expect(read('README.md')).toContain('CANNBAY2_LFS')
   })
 })

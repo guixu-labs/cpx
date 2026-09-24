@@ -6,10 +6,11 @@
 // INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT OF MERCHANTABILITY OR FITNESS FOR A PARTICULAR PURPOSE,
 // See LICENSE in the root of the software repository for the full text of the License.
 
-// cpx 参数解析：cpx 保留参数（--autoupload / --submitter / --category /
-// --desc / --opgen / --baseline / --agent）在任何位置都被 cpx 拦截消费，
-// 绝不透传给 agent —— 否则 `cpx opencode --autoupload` 会把 flag 递给
-// opencode，agent 打印帮助即退（零捕获闪退）。其余位置参数原样转发。
+// cpx argument parsing: reserved flags (--agent and a few legacy ones) are
+// consumed by cpx anywhere on the command line and NEVER forwarded to the
+// agent — forwarding unknown flags would make e.g. `cpx opencode --autoupload`
+// hand the flag to opencode, which prints help and exits with zero capture.
+// All other positional args pass through unchanged.
 
 export type AgentProfile = 'claude' | 'opencode' | 'cannbot' | 'codex' | 'openai' | 'generic';
 
@@ -17,28 +18,26 @@ export interface CpxArgs {
   profile: AgentProfile;
   agentCmd: string;
   agentArgs: string[];
-  /** 补传/自动上传相关保留参数原样回放给 runUpload（flag 与值成对） */
-  uploadArgs: string[];
-  autoUpload: boolean;
 }
 
-const VALUE_FLAGS = new Set(['--submitter', '--desc', '--category', '--opgen']);
+// Flags consumed silently (never forwarded to the agent): --autoupload and
+// the value-taking legacy flags below. Silently swallowing them keeps old
+// wrapper invocations running instead of crashing the agent with unknown
+// options.
+const SILENT_FLAGS = new Set(['--autoupload', '--baseline', '--submitter', '--desc', '--category', '--opgen']);
 
 export function parseArgs(argv: string[]): CpxArgs {
   const args = argv.slice(2);
   let profile: AgentProfile | null = null;
-  let autoUpload = false;
   const rest: string[] = [];
-  const uploadArgs: string[] = [];
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
     if (a === '--agent' && args[i + 1]) { profile = args[i + 1] as AgentProfile; i++; continue; }
-    if (a === '--autoupload') { autoUpload = true; continue; }
-    if (VALUE_FLAGS.has(a)) {
-      if (args[i + 1] !== undefined) { uploadArgs.push(a, args[i + 1]); i++; }
+    if (SILENT_FLAGS.has(a)) {
+      // Value-taking variants: also swallow the following token
+      if (a !== '--autoupload' && a !== '--baseline' && args[i + 1] !== undefined) i++;
       continue;
     }
-    if (a === '--baseline') { uploadArgs.push(a); continue; }
     rest.push(a);
   }
   let rest2 = rest;
@@ -53,5 +52,5 @@ export function parseArgs(argv: string[]): CpxArgs {
     else if (base === 'codex') profile = 'codex';
     else profile = 'generic';
   }
-  return { profile: profile!, agentCmd, agentArgs, uploadArgs, autoUpload };
+  return { profile: profile!, agentCmd, agentArgs };
 }

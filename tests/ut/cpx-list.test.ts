@@ -152,16 +152,16 @@ describe('cpx list', () => {
     }
   }, 90_000);
 
-  it('removed `cpx import` subcommand exits 2 with a pointer to insight import', () => {
-    const r = spawnSync('bash', [WRAPPER, 'import'], {
+  it('unknown subcommand falls through to agent spawn (no capture entries touched)', () => {
+    const r = spawnSync('bash', [WRAPPER, 'definitely-not-a-command-xyz'], {
       encoding: 'utf-8',
       timeout: 60_000,
       env: { ...process.env, CANNBOT_PROXY_DIR: captureDir() },
     });
-    // 指路提示（stderr），而不是把 import 当 agent 命令 spawn 报 ENOENT
-    expect(r.status).toBe(2);
-    expect(r.stderr).toContain('已移除');
-    expect(r.stderr).toContain('Import Session');
-    expect(r.stderr).toContain('cpx list');
+    // 非已知子命令 → 当作 agent 命令 spawn；本机无此命令 ENOENT，会话干净
+    // 收尾（exit 0、零捕获），不影响已有捕获条目
+    expect(r.status).toBe(0);
+    expect(r.stderr).toContain('ENOENT');
+    expect(r.stderr).not.toContain('captures dir');
   }, 90_000);
 });
