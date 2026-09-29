@@ -44,7 +44,7 @@ interface ResponseRequestBody {
   stream?: boolean;
 }
 
-function xCannbay(schema: string, data: Record<string, unknown>) {
+function xLake(schema: string, data: Record<string, unknown>) {
   return { schema, version: 1, data };
 }
 
@@ -61,7 +61,7 @@ function mapUsage(usage: AnthropicUsage | OpenAIUsage | null): AnthropicUsage | 
   return usage as AnthropicUsage;
 }
 
-function convertInputItem(item: ResponseInputItem): { type: string; message: { role: string; content: string | AnthropicContentBlock[] }; source: string; x_cannbay: { schema: string; version: number; data: { roundIndex: number; kind: string } } } | null {
+function convertInputItem(item: ResponseInputItem): { type: string; message: { role: string; content: string | AnthropicContentBlock[] }; source: string; x_lake: { schema: string; version: number; data: { roundIndex: number; kind: string } }; x_cannbay: { schema: string; version: number; data: { roundIndex: number; kind: string } } } | null {
   if (item.type === 'message') {
     const role = item.role ?? 'user';
     if (role === 'assistant' || role === 'system' || role === 'developer') return null;
@@ -72,7 +72,7 @@ function convertInputItem(item: ResponseInputItem): { type: string; message: { r
       type: 'user',
       message: { role: 'user', content: content || '' },
       source: 'codex-proxy',
-      x_cannbay: xCannbay('cc-wire-input', { roundIndex: 0, kind: 'user' }),
+      x_lake: xLake('cc-wire-input', { roundIndex: 0, kind: 'user' }), x_cannbay: xLake('cc-wire-input', { roundIndex: 0, kind: 'user' }),
     };
   }
   if (item.type === 'function_call_output') {
@@ -83,7 +83,7 @@ function convertInputItem(item: ResponseInputItem): { type: string; message: { r
         content: [{ type: 'tool_result', tool_use_id: item.call_id ?? '', content: item.output ?? '' }],
       },
       source: 'codex-proxy',
-      x_cannbay: xCannbay('cc-wire-input', { roundIndex: 0, kind: 'tool-result' }),
+      x_lake: xLake('cc-wire-input', { roundIndex: 0, kind: 'tool-result' }), x_cannbay: xLake('cc-wire-input', { roundIndex: 0, kind: 'tool-result' }),
     };
   }
   return null;
@@ -98,7 +98,12 @@ export function emit(rec: ProxyRecord): void {
   if (!sessionMetaWritten.has(sid)) {
     sessionMetaWritten.add(sid);
     writeMeta(sessionMetaPath(sid), {
-      x_cannbay: xCannbay('cc-session-meta', {
+      x_lake: xLake('cc-session-meta', {
+        producer: 'cpx',
+        framework: 'codex',
+        protocol: 'responses',
+        sid,
+      }), x_cannbay: xLake('cc-session-meta', {
         producer: 'cpx',
         framework: 'codex',
         protocol: 'responses',
@@ -113,7 +118,7 @@ export function emit(rec: ProxyRecord): void {
   for (let i = prev; i < items.length; i++) {
     const line = convertInputItem(items[i]);
     if (line) {
-      (line.x_cannbay as { data: { roundIndex: number } }).data.roundIndex = roundIndex;
+      (line.x_lake as { data: { roundIndex: number } }).data.roundIndex = roundIndex;
       appendClaudeLine(sessionFilePath(sid), { ...line, timestamp: toISO(rec.receivedAt) });
     }
   }
@@ -135,7 +140,17 @@ export function emit(rec: ProxyRecord): void {
     system: body.instructions ?? undefined,
     tools: Array.isArray(body.tools) ? body.tools : undefined,
     source: proxySourceMarker(rec.protocol),
-    x_cannbay: xCannbay('cc-wire-round', {
+    x_lake: xLake('cc-wire-round', {
+      roundIndex,
+      protocol: 'responses',
+      system: body.instructions ?? undefined,
+      tools: Array.isArray(body.tools) ? body.tools : undefined,
+      requestParams: { model: body.model ?? rec.request.model },
+      latencyMs: rec.latencyMs,
+      ttftMs: rec.ttftMs ?? undefined,
+      stopReason: rec.response.stop_reason ?? undefined,
+      status: rec.response.status,
+    }), x_cannbay: xLake('cc-wire-round', {
       roundIndex,
       protocol: 'responses',
       system: body.instructions ?? undefined,

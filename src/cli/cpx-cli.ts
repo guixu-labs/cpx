@@ -561,7 +561,8 @@ function readSessionMetaFor(stem: string, sid: string): { framework: string | nu
   ];
   for (const c of candidates) {
     try {
-      const xb = JSON.parse(fs.readFileSync(c, 'utf-8'))?.x_cannbay;
+      const xb0 = JSON.parse(fs.readFileSync(c, 'utf-8'));
+      const xb = xb0?.x_lake ?? xb0?.x_cannbay;
       if (xb?.schema === 'cc-session-meta' && xb.data && typeof xb.data === 'object') {
         return {
           framework: typeof xb.data.framework === 'string' ? xb.data.framework : null,
@@ -880,13 +881,13 @@ async function main(): Promise<void> {
   // subagents 压缩为 .jsonl.7z —— 在 normalize/import 之前，sourcePath 一次
   // 定型为 .7z。同时给伴生 cc-session-meta 打 governed 标记（spec §4.4）：
   // 字节流已经 cpx 落盘咽喉 redactor 全量清洗（server.ts dispatchEmit），
-  // cannbay2 上传侧据此走直传快路径（免解压重洗重压）。
+  // lake 上传侧据此走直传快路径（免解压重洗重压）。
   const markGoverned = (sidRaw: string): void => {
     try {
       const metaPath = sessionMetaPath(sidRaw);
       if (!fs.existsSync(metaPath)) return;
       const meta = JSON.parse(fs.readFileSync(metaPath, 'utf-8'));
-      const xb = meta?.x_cannbay;
+      const xb = meta?.x_lake ?? meta?.x_cannbay;
       if (xb?.schema === 'cc-session-meta' && xb.data && xb.data.producer === 'cpx') {
         xb.data.governed = true;
         fs.writeFileSync(metaPath, JSON.stringify(meta, null, 2) + '\n');

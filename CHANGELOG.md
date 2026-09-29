@@ -2,6 +2,11 @@
 
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 
+## [Unreleased]
+
+### Changed
+- 【信封双名 + 规范文档引用更名（平台化 P3，与 insight 同步）】捕获扩展字段信封写侧双名过渡：同一信封对象挂新键 `x_lake` + 旧键（三个 emitter 全部写点），读侧（meta.json 回读×2）新键优先兜底旧键——老版本 insight 读方零损失、湖内存量数据零迁移；下个大版本退役旧键。格式规范文档引用同步更名。门禁：ut 173 / e2e 10
+
 ## [v0.1.8] - 2026-09-22
 
 ### Added
