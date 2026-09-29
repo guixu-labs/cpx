@@ -27,11 +27,11 @@ import path from 'node:path';
 import type { ProxyRecord, Protocol, AnthropicContentBlock, AnthropicUsage, OpenAIUsage } from './types';
 import { sessionFilePath, sessionMetaPath, subagentFilePath, subagentMetaPath, appendClaudeLine, writeMeta, PROXY_DIR } from './writer';
 
-// x_cannbay 命名空间（docs/cannbay-schema-spec.md）：claude 原生字段是冻结
+// x_cannbay 命名空间（docs/lake-schema-spec.md）：claude 原生字段是冻结
 // 信封，扩展数据进带 (schema,version) 声明的口袋。双轨期 legacy 顶层字段
 // （source/duration_ms/system/tools/ttftMs/stopReason/version/deduped/
 // originalChars）并存写 —— 读方一律 x_cannbay 优先。
-function xCannbay(schema: string, data: Record<string, unknown>) {
+function xLake(schema: string, data: Record<string, unknown>) {
   return { schema, version: 1, data };
 }
 
@@ -218,7 +218,13 @@ export function emit(rec: ProxyRecord): void {
     if (!sessionMetaWritten.has(sid)) {
       sessionMetaWritten.add(sid);
       writeMeta(sessionMetaPath(sid), {
-        x_cannbay: xCannbay('cc-session-meta', {
+        x_lake: xLake('cc-session-meta', {
+          producer: 'cpx',
+          framework: rec.protocol === 'openai' ? 'opencode' : 'claude-code',
+          protocol: rec.protocol,
+          ccVersion: ccVersionFromSystem(body.system),
+          sid,
+        }), x_cannbay: xLake('cc-session-meta', {
           producer: 'cpx',
           framework: rec.protocol === 'openai' ? 'opencode' : 'claude-code',
           protocol: rec.protocol,
@@ -239,7 +245,12 @@ export function emit(rec: ProxyRecord): void {
         toolUseId: meta?.toolUseId ?? null,
         name: meta?.name ?? null,
         agentType: meta?.type ?? null,
-        x_cannbay: xCannbay('cc-subagent-meta', {
+        x_lake: xLake('cc-subagent-meta', {
+          toolUseId: meta?.toolUseId ?? null,
+          name: meta?.name ?? null,
+          agentType: meta?.type ?? null,
+          subagentSessionId: subId,
+        }), x_cannbay: xLake('cc-subagent-meta', {
           toolUseId: meta?.toolUseId ?? null,
           name: meta?.name ?? null,
           agentType: meta?.type ?? null,
@@ -298,7 +309,11 @@ export function emit(rec: ProxyRecord): void {
         deduped: true,
         originalChars: injectionText!.length,
         source: proxySourceMarker(rec.protocol),
-        x_cannbay: xCannbay('cc-wire-input', {
+        x_lake: xLake('cc-wire-input', {
+          roundIndex: roundCount.get(contextKey) ?? 0,
+          kind: 'dedup-placeholder',
+          dedup: { originalChars: injectionText!.length, fingerprint },
+        }), x_cannbay: xLake('cc-wire-input', {
           roundIndex: roundCount.get(contextKey) ?? 0,
           kind: 'dedup-placeholder',
           dedup: { originalChars: injectionText!.length, fingerprint },
@@ -314,7 +329,10 @@ export function emit(rec: ProxyRecord): void {
       message: { role: m.role, content: m.content ?? '' },
       timestamp: toISO(rec.receivedAt),
       source: proxySourceMarker(rec.protocol),
-      x_cannbay: xCannbay('cc-wire-input', {
+      x_lake: xLake('cc-wire-input', {
+        roundIndex: roundCount.get(contextKey) ?? 0,
+        kind: wireInputKind(m),
+      }), x_cannbay: xLake('cc-wire-input', {
         roundIndex: roundCount.get(contextKey) ?? 0,
         kind: wireInputKind(m),
       }),
@@ -333,7 +351,7 @@ export function emit(rec: ProxyRecord): void {
   // WITHOUT an OCP-bending post-write) + `stopReason` (adapter reads →
   // finish_reason → Turn.finishReason). `ttftMs` has no pipeline field, so it
   // stays a pure extension field (declared in x_cannbay cc-wire-round; today
-  // it only round-trips via cannbay2 cc-db-turn export/patch).
+  // it only round-trips via lake cc-db-turn export/patch).
   // x_cannbay（cc-wire-round）是以上全部信息的声明式权威源（双轨并存，读方优先），
   // 并新增 legacy 通道没有的：roundIndex / requestParams / status。
   const contentBlocks = Array.isArray(rec.response.content) ? rec.response.content as AnthropicContentBlock[] : [];
@@ -356,7 +374,22 @@ export function emit(rec: ProxyRecord): void {
     stopReason: rec.response.stop_reason ?? undefined,
     ttftMs: rec.ttftMs ?? undefined,
     source: proxySourceMarker(rec.protocol),
-    x_cannbay: xCannbay('cc-wire-round', {
+    x_lake: xLake('cc-wire-round', {
+      roundIndex,
+      protocol: rec.protocol,
+      system: body.system ?? undefined,
+      tools: Array.isArray(body.tools) ? body.tools : undefined,
+      requestParams: {
+        temperature: body.temperature,
+        maxTokens: body.max_tokens,
+        model: rec.request.model,
+      },
+      latencyMs: rec.latencyMs,
+      ttftMs: rec.ttftMs ?? undefined,
+      stopReason: rec.response.stop_reason ?? undefined,
+      status: rec.response.status,
+      ccVersion: ccVersionFromSystem(body.system) ?? undefined,
+    }), x_cannbay: xLake('cc-wire-round', {
       roundIndex,
       protocol: rec.protocol,
       system: body.system ?? undefined,

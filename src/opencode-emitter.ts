@@ -63,9 +63,9 @@ const subMetaWritten = new Set<string>(); // subIds that already got a meta.json
 // from main agent responses so child-session meta.json can link back to the spawn.
 const taskDispatch = new Map<string, { toolUseId: string | null; name: string | null; agentType: string | null }>();
 
-// x_cannbay 命名空间（docs/cannbay-schema-spec.md）：信封外一切扩展的声明式
+// x_cannbay 命名空间（docs/lake-schema-spec.md）：信封外一切扩展的声明式
 // 权威源，双轨期与 legacy 顶层字段并存写 —— 读方一律 x_cannbay 优先。
-function xCannbay(schema: string, data: Record<string, unknown>) {
+function xLake(schema: string, data: Record<string, unknown>) {
   return { schema, version: 1, data };
 }
 
@@ -193,7 +193,13 @@ export function emit(rec: ProxyRecord): void {
       sessionMetaWritten.add(mainSid);
       const agent = agentFrameworkOf(rec.userAgent);
       writeMeta(sessionMetaPath(mainSid), {
-        x_cannbay: xCannbay('cc-session-meta', {
+        x_lake: xLake('cc-session-meta', {
+          producer: 'cpx',
+          framework: agent.framework,
+          protocol: 'openai',
+          ...(agent.framework === 'cannbot' ? { ccVersion: agentVersionOf(rec.userAgent) } : {}),
+          sid: mainSid,
+        }), x_cannbay: xLake('cc-session-meta', {
           producer: 'cpx',
           framework: agent.framework,
           protocol: 'openai',
@@ -260,7 +266,10 @@ export function emit(rec: ProxyRecord): void {
         },
         timestamp: toISO(rec.receivedAt),
         source: agent.marker,
-        x_cannbay: xCannbay('cc-wire-input', {
+        x_lake: xLake('cc-wire-input', {
+          roundIndex: roundCount.get(contextKey) ?? 0,
+          kind: 'tool-result',
+        }), x_cannbay: xLake('cc-wire-input', {
           roundIndex: roundCount.get(contextKey) ?? 0,
           kind: 'tool-result',
         }),
@@ -271,7 +280,10 @@ export function emit(rec: ProxyRecord): void {
         message: { role: m.role, content: convertUserContent(m.content) },
         timestamp: toISO(rec.receivedAt),
         source: agent.marker,
-        x_cannbay: xCannbay('cc-wire-input', {
+        x_lake: xLake('cc-wire-input', {
+          roundIndex: roundCount.get(contextKey) ?? 0,
+          kind: wireInputKind(m),
+        }), x_cannbay: xLake('cc-wire-input', {
           roundIndex: roundCount.get(contextKey) ?? 0,
           kind: wireInputKind(m),
         }),
@@ -298,7 +310,12 @@ export function emit(rec: ProxyRecord): void {
       toolUseId: meta.toolUseId,
       name: meta.name,
       agentType: meta.agentType,
-      x_cannbay: xCannbay('cc-subagent-meta', {
+      x_lake: xLake('cc-subagent-meta', {
+        toolUseId: meta.toolUseId,
+        name: meta.name,
+        agentType: meta.agentType,
+        subagentSessionId: subId,
+      }), x_cannbay: xLake('cc-subagent-meta', {
         toolUseId: meta.toolUseId,
         name: meta.name,
         agentType: meta.agentType,
@@ -345,7 +362,26 @@ export function emit(rec: ProxyRecord): void {
     // x_cannbay（cc-wire-round）是以上全部信息的声明式权威源（spec §6 双轨
     // 并存，读方优先），并新增 legacy 通道没有的：roundIndex / requestParams /
     // status / protocol / reasoningTokens。
-    x_cannbay: xCannbay('cc-wire-round', {
+    x_lake: xLake('cc-wire-round', {
+      roundIndex,
+      protocol: 'openai',
+      system: systemText ?? undefined,
+      tools,
+      requestParams: {
+        temperature: body.temperature,
+        maxTokens: body.max_tokens,
+        model: rec.request.model,
+      },
+      latencyMs: rec.latencyMs,
+      ttftMs: rec.ttftMs ?? undefined,
+      stopReason: rec.response.stop_reason ?? undefined,
+      status: rec.response.status,
+      // 思考计费 token（openai 重组器自 usage.completion_tokens_details 映射）：
+      // insight claude-jsonl 对 cc-wire-round v1 既有 reasoningTokens 读取通道，
+      // 零 insight 改动恢复 Turn reasoning tokens。undefined 时 JSON 序列化自然
+      // 省略该键（anthropic 协议路径无此字段）。
+      reasoningTokens: usage?.reasoning_tokens,
+    }), x_cannbay: xLake('cc-wire-round', {
       roundIndex,
       protocol: 'openai',
       system: systemText ?? undefined,

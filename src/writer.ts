@@ -38,7 +38,7 @@ export function sessionFilePath(sid: string): string {
   return path.join(dir(), `${captureStem(sid)}.jsonl`);
 }
 
-// Main-session meta（cc-session-meta，schema 见 docs/cannbay-schema-spec.md）：
+// Main-session meta（cc-session-meta，schema 见 docs/lake-schema-spec.md）：
 // producer/framework/protocol/ccVersion 等文件级声明，紧邻主捕获文件。
 export function sessionMetaPath(sid: string): string {
   return path.join(dir(), `${captureStem(sid)}.meta.json`);
