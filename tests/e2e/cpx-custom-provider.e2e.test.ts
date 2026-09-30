@@ -23,6 +23,7 @@ import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import crypto from 'node:crypto';
 
 const PROXY_ROOT = path.resolve(__dirname, '../../');
 const WRAPPER = path.join(PROXY_ROOT, 'cpx-cli');
@@ -30,6 +31,7 @@ const WRAPPER = path.join(PROXY_ROOT, 'cpx-cli');
 let TMP: string;
 let CFG: string;
 let DATA: string;
+let CACHE: string;
 let CAPTURES: string;
 let AGENT: string;
 let INJECTED: string;
@@ -38,6 +40,7 @@ beforeAll(() => {
   TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'cpx-custom-provider-it-'));
   CFG = path.join(TMP, 'config');
   DATA = path.join(TMP, 'data');
+  CACHE = path.join(TMP, 'cache');
   CAPTURES = path.join(TMP, 'captures');
   // 用户配置：自定义 gateway provider（jsonc，带注释 + URL，客户现场形态）
   fs.mkdirSync(path.join(CFG, 'opencode'), { recursive: true });
@@ -51,14 +54,30 @@ beforeAll(() => {
     '        "baseURL": "https://private-gw.example.com/v1",',
     '        "apiKey": "test-key-1234567890"',
     '      },',
-    '      "models": { "glm-5.3": { "name": "GLM 5.3" } }',
+    '      "models": { "model-a1": { "name": "Model A1" } }',
     '    }',
     '  }',
     '}',
   ].join('\n'));
-  // auth.json：另有一个官方 provider（模拟客户现场 alibaba-cn）
+  // auth.json：另有一个官方 provider（不在用户配置里——upstream 须从 catalog 缓存解析）
   fs.mkdirSync(path.join(DATA, 'opencode'), { recursive: true });
-  fs.writeFileSync(path.join(DATA, 'opencode', 'auth.json'), JSON.stringify({ 'alibaba-cn': { type: 'api', key: 'k' } }));
+  fs.writeFileSync(path.join(DATA, 'opencode', 'auth.json'), JSON.stringify({ 'example-cn': { type: 'api', key: 'k' } }));
+  // opencode.db：models.dev catalog 缓存（opencode 2.x 内建 provider 的
+  // upstream 来源——注册表已移出二进制，strings 扫描必 miss）。伪记录：
+  // 非 sqlite 字节（node:sqlite 打开必败 → raw 扫描路径，新旧 node 行为
+  // 一致），key 列值与 value 列值相邻（真实库记录形态），digest 吻合。
+  const catalog = JSON.stringify({
+    'example-cn': { id: 'example-cn', npm: '@ai-sdk/openai-compatible', api: 'https://catalog.example.com/compatible-mode/v1' },
+  });
+  const entry = JSON.stringify({
+    updatedAt: 1759000000000,
+    digest: crypto.createHash('sha256').update(Buffer.from(catalog, 'latin1')).digest('hex'),
+    body: catalog,
+  });
+  fs.writeFileSync(path.join(DATA, 'opencode', 'opencode.db'),
+    `not-a-sqlite-db\x00\x01 noise models-dev:catalog${entry} trailing \xff\xfe`);
+  // 缓存目录钉死到空夹具：不读开发机真实的 ~/.cache/opencode（确定性）
+  fs.mkdirSync(CACHE, { recursive: true });
   // 假 agent：把 cpx 注入的 OPENCODE_CONFIG_CONTENT 落盘（不真跑 opencode）
   INJECTED = path.join(TMP, 'injected-config.json');
   AGENT = path.join(TMP, 'fake-agent');
@@ -83,6 +102,7 @@ function runCpx(extraEnv: Record<string, string>) {
       ...process.env,
       XDG_CONFIG_HOME: CFG,
       XDG_DATA_HOME: DATA,
+      XDG_CACHE_HOME: CACHE,
       CANNBOT_PROXY_DIR: CAPTURES,
       // 钉死不可达：探测必败 → 不机会主义导入开发机在跑的真 insight、不开浏览器
       CANNBOT_CPX_INSIGHT_BASE: 'http://127.0.0.1:1',
@@ -92,11 +112,10 @@ function runCpx(extraEnv: Record<string, string>) {
 }
 
 describe('cpx opencode 自定义 provider 捕获（客户现场回归 IT）', () => {
-  // 流水线门禁跳过（scripts/run-tests.sh 设 CANNBOT_TEST_SKIP_SLOW=1）：本用例
-  // 在部分环境（WSL）下 cpx-cli 启动输出带 "upstream not found in binary/config"
-  // 告警导致断言失败，根因待查（跟踪：cannbot-sentry 评审 f0f6153 第三条，
-  // 根因修复后收窄/移除此门控）；③ 前置检查用例仍全量执行
-  it.skipIf(process.env.CANNBOT_TEST_SKIP_SLOW === '1')('①②④ auth + 配置 provider 一并注入；gateway upstream 从配置解析；干净退出', () => {
+  // 历史 skipIf 门控已摘除：原"WSL 下 upstream 扫描告警误红"的根因是
+  // opencode 2.x 注册表移出二进制（strings 必 miss），已修复为从 models.dev
+  // catalog 缓存读取（opencode.db kv），本用例夹具即验证该链路。
+  it('①②④ auth + 配置 provider 一并注入；upstream 从配置/catalog 解析；干净退出', () => {
     const r = runCpx({});
     const out = `${r.stdout}\n${r.stderr}`;
     expect(r.status, `cpx output:\n${out}`).toBe(0);
@@ -110,13 +129,15 @@ describe('cpx opencode 自定义 provider 捕获（客户现场回归 IT）', ()
     // 注入只含 baseURL 覆盖（apiKey/models 由 opencode 从全局配置深合并保留）
     expect(Object.keys(injected.provider.gateway.options)).toEqual(['baseURL']);
     // auth.json 的官方 provider 同样在注入里
-    expect(injected.provider['alibaba-cn'].options.baseURL).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/alibaba-cn\/$/);
+    expect(injected.provider['example-cn'].options.baseURL).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/example-cn\/$/);
 
-    // ② 启动日志：providers 列表 = auth ∪ 配置；gateway upstream 来自配置本体
+    // ② 启动日志：providers 列表 = auth ∪ 配置；gateway upstream 来自配置本体，
+    //    example-cn upstream 来自 opencode.db 的 models.dev catalog 缓存（2.x 链路）
     expect(out).toContain('gateway');
-    expect(out).toContain('alibaba-cn');
+    expect(out).toContain('example-cn');
     expect(out).toContain('https://private-gw.example.com/v1');
-    expect(out).not.toContain('upstream not found in binary/config');
+    expect(out).toContain('https://catalog.example.com/compatible-mode/v1');
+    expect(out).not.toContain('upstream not found');
 
     // ④ 无流量 → 占位捕获被清理（不留 0 字节残骸）
     const leftovers = fs.existsSync(CAPTURES)

@@ -6,19 +6,19 @@
 // INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
 // See LICENSE in the root of the software repository for the full text of the License.
 
-// `cpx opencode` 项目级 provider 捕获 IT（客户现场回归：huoshan-ai-gateway）：
+// `cpx opencode` 项目级 provider 捕获 IT（客户现场回归场景）：
 // 用户模型走项目级配置定义的 provider（.opencode/opencode.json 的
-// huoshan-ai-gateway，baseURL 直连 volceapi），auth.json 只有别的官方 provider。
+// example-gateway，baseURL 直连真实上游），auth.json 只有别的官方 provider。
 // 修复前 provider 发现链只扫全局配置（~/.config/opencode、~/.config/cannbot），
 // 项目级 .opencode/opencode.json 从未被扫描 → 该 provider 对 cpx 完全不可见 →
 // baseURL 未重定向、opencode 直连上游、proxy 颗粒无收（捕获 0 字节）。
 // 端到端验证（经仓内 cpx-cli wrapper 起真 CLI + 真 proxy server，agent 用假
 // 脚本把注入的 OPENCODE_CONFIG_CONTENT 落盘，不真跑 opencode）：
-//   ① 注入内容：provider.huoshan-ai-gateway.options.baseURL =
-//      http://127.0.0.1:<port>/huoshan-ai-gateway/（cwd 设为项目目录，验证
+//   ① 注入内容：provider.example-gateway.options.baseURL =
+//      http://127.0.0.1:<port>/example-gateway/（cwd 设为项目目录，验证
 //      项目级配置被扫描）
-//   ② 启动日志：providers 列表含 auth.json 项 + huoshan-ai-gateway；
-//      huoshan-ai-gateway 的 upstream 从项目配置本体解析（volceapi），不是
+//   ② 启动日志：providers 列表含 auth.json 项 + example-gateway；
+//      example-gateway 的 upstream 从项目配置本体解析（真实上游），不是
 //      "(not found)"
 //   ③ 无流量 → 占位捕获清理，退出码 0
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
@@ -26,6 +26,7 @@ import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import crypto from 'node:crypto';
 
 const PROXY_ROOT = path.resolve(__dirname, '../../');
 const WRAPPER = path.join(PROXY_ROOT, 'cpx-cli');
@@ -34,6 +35,7 @@ let TMP: string;
 let PROJECT: string;
 let CFG: string;
 let DATA: string;
+let CACHE: string;
 let CAPTURES: string;
 let AGENT: string;
 let INJECTED: string;
@@ -49,19 +51,36 @@ beforeAll(() => {
   fs.mkdirSync(path.join(PROJECT, '.opencode'), { recursive: true });
   fs.writeFileSync(path.join(PROJECT, '.opencode', 'opencode.json'), JSON.stringify({
     provider: {
-      'huoshan-ai-gateway': {
+      'example-gateway': {
         npm: '@ai-sdk/openai-compatible',
         options: {
-          baseURL: 'https://ark.cn-beijing.volces.com/api/v3',
+          baseURL: 'https://upstream.example.com/api/v3',
           apiKey: 'test-key-1234567890',
         },
-        models: { 'glm-5.3-flash': { name: 'GLM 5.3 Flash' } },
+        models: { 'model-a1-flash': { name: 'Model A1 Flash' } },
       },
     },
   }));
-  // auth.json：另有一个官方 provider（客户现场 zhipuai-coding-plan）
+  // auth.json：另有一个官方 provider（不在任何用户配置里——upstream 只能来自 catalog 缓存）
   fs.mkdirSync(path.join(DATA, 'opencode'), { recursive: true });
-  fs.writeFileSync(path.join(DATA, 'opencode', 'auth.json'), JSON.stringify({ 'zhipuai-coding-plan': { type: 'api', key: 'k' } }));
+  fs.writeFileSync(path.join(DATA, 'opencode', 'auth.json'), JSON.stringify({ 'example-coding-plan': { type: 'api', key: 'k' } }));
+  // opencode.db：models.dev catalog 缓存（opencode 2.x 内建 provider 的
+  // upstream 来源——注册表已移出二进制，strings 扫描必 miss）。伪记录：
+  // 非 sqlite 字节（node:sqlite 打开必败 → raw 扫描路径，新旧 node 行为
+  // 一致），key 列值与 value 列值相邻（真实库记录形态），digest 吻合。
+  const catalog = JSON.stringify({
+    'example-coding-plan': { id: 'example-coding-plan', npm: '@ai-sdk/openai-compatible', api: 'https://catalog.example.com/api/coding/paas/v4' },
+  });
+  const entry = JSON.stringify({
+    updatedAt: 1759000000000,
+    digest: crypto.createHash('sha256').update(Buffer.from(catalog, 'latin1')).digest('hex'),
+    body: catalog,
+  });
+  fs.writeFileSync(path.join(DATA, 'opencode', 'opencode.db'),
+    `not-a-sqlite-db\x00\x01 noise models-dev:catalog${entry} trailing \xff\xfe`);
+  // 缓存目录钉死到空夹具：不读开发机真实的 ~/.cache/opencode（确定性）
+  CACHE = path.join(TMP, 'cache');
+  fs.mkdirSync(CACHE, { recursive: true });
   // 全局配置为空（客户现场该 provider 不在全局配置）
   fs.mkdirSync(path.join(CFG, 'opencode'), { recursive: true });
   // 假 agent：把 cpx 注入的 OPENCODE_CONFIG_CONTENT 落盘（不真跑 opencode）
@@ -91,6 +110,7 @@ function runCpx(extraEnv: Record<string, string>) {
       ...process.env,
       XDG_CONFIG_HOME: CFG,
       XDG_DATA_HOME: DATA,
+      XDG_CACHE_HOME: CACHE,
       CANNBOT_PROXY_DIR: CAPTURES,
       // 钉死不可达：探测必败 → 不机会主义导入开发机在跑的真 insight、不开浏览器
       CANNBOT_CPX_INSIGHT_BASE: 'http://127.0.0.1:1',
@@ -100,9 +120,10 @@ function runCpx(extraEnv: Record<string, string>) {
 }
 
 describe('cpx opencode 项目级 provider 捕获（客户现场回归 IT）', () => {
-  // 流水线门禁跳过（scripts/run-tests.sh 设 CANNBOT_TEST_SKIP_SLOW=1），原因
-  // 与 cpx-custom-provider.e2e.test.ts 同（WSL 下 upstream 扫描告警误红）
-  it.skipIf(process.env.CANNBOT_TEST_SKIP_SLOW === '1')('①②③ 项目级 provider 注入 baseURL 重定向；upstream 从项目配置解析；干净退出', () => {
+  // 历史 skipIf 门控已摘除：原"WSL 下 upstream 扫描告警误红"的根因是
+  // opencode 2.x 注册表移出二进制（strings 必 miss），已修复为从 models.dev
+  // catalog 缓存读取（opencode.db kv），本用例夹具即验证该链路。
+  it('①②③ 项目级 provider 注入 baseURL 重定向；upstream 从项目配置/catalog 解析；干净退出', () => {
     const r = runCpx({});
     const out = `${r.stdout}\n${r.stderr}`;
     expect(r.status, `cpx output:\n${out}`).toBe(0);
@@ -110,19 +131,21 @@ describe('cpx opencode 项目级 provider 捕获（客户现场回归 IT）', ()
     // ① 注入内容：项目级 provider baseURL 重定向到本机 proxy（/<providerId>/ 前缀）
     expect(fs.existsSync(INJECTED)).toBe(true);
     const injected = JSON.parse(fs.readFileSync(INJECTED, 'utf-8'));
-    const huo = injected?.provider?.['huoshan-ai-gateway']?.options;
+    const huo = injected?.provider?.['example-gateway']?.options;
     expect(huo).toBeTruthy();
-    expect(huo.baseURL).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/huoshan-ai-gateway\/$/);
+    expect(huo.baseURL).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/example-gateway\/$/);
     // 注入只含 baseURL 覆盖（apiKey/models 由 opencode 从项目配置深合并保留）
-    expect(Object.keys(injected.provider['huoshan-ai-gateway'].options)).toEqual(['baseURL']);
+    expect(Object.keys(injected.provider['example-gateway'].options)).toEqual(['baseURL']);
     // auth.json 的官方 provider 同样在注入里
-    expect(injected.provider['zhipuai-coding-plan'].options.baseURL).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/zhipuai-coding-plan\/$/);
+    expect(injected.provider['example-coding-plan'].options.baseURL).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/example-coding-plan\/$/);
 
-    // ② 启动日志：providers 列表 = auth ∪ 项目配置；upstream 来自项目配置本体
-    expect(out).toContain('huoshan-ai-gateway');
-    expect(out).toContain('zhipuai-coding-plan');
-    expect(out).toContain('https://ark.cn-beijing.volces.com/api/v3');
-    expect(out).not.toContain('upstream not found in binary/config');
+    // ② 启动日志：providers 列表 = auth ∪ 项目配置；upstream 来自项目配置本体，
+    //    example-coding-plan upstream 来自 opencode.db 的 catalog 缓存（2.x 链路）
+    expect(out).toContain('example-gateway');
+    expect(out).toContain('example-coding-plan');
+    expect(out).toContain('https://upstream.example.com/api/v3');
+    expect(out).toContain('https://catalog.example.com/api/coding/paas/v4');
+    expect(out).not.toContain('upstream not found');
 
     // ③ 无流量 → 占位捕获被清理（不留 0 字节残骸）
     const leftovers = fs.existsSync(CAPTURES)
@@ -144,7 +167,7 @@ describe('cpx opencode 项目级 provider 捕获（客户现场回归 IT）', ()
       // 仅有项目级 provider 也能通过前置检查并注入
       expect(fs.existsSync(INJECTED)).toBe(true);
       const injected = JSON.parse(fs.readFileSync(INJECTED, 'utf-8'));
-      expect(injected?.provider?.['huoshan-ai-gateway']?.options?.baseURL).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/huoshan-ai-gateway\/$/);
+      expect(injected?.provider?.['example-gateway']?.options?.baseURL).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/example-gateway\/$/);
     } finally {
       fs.writeFileSync(authPath, backup);
     }

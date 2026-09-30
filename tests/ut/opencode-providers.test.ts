@@ -9,14 +9,16 @@
 // opencode provider 发现单测：JSONC 剥离（URL 保真）、自定义 provider 读取
 // （双根 / .json 与 .jsonc / 注释 / 畸形容错）、覆盖列表解析（-m 精确 /
 // auth ∪ custom / cannbot 内建）。
-// 客户现场回归：ses_fa840cd30ffeY7qbw9q77JTvxj 用 gateway/glm-5.3（自定义
-// provider，~/.config/opencode/opencode.jsonc 定义、baseURL 直连 volceapi），
+// 客户现场回归：ses_fa840cd30ffeY7qbw9q77JTvxj 用 gateway/model-a1（自定义
+// provider，~/.config/opencode/opencode.jsonc 定义、baseURL 直连真实上游），
 // 修复前 cpx 只看 auth.json → gateway 的 baseURL 从未被重定向 → 132 条消息
 // 全部直连上游，cpx 捕获 0 字节。
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import crypto from 'node:crypto';
+import { createRequire } from 'node:module';
 import {
   stripJsoncComments,
   readAuthProvidersFromFile,
@@ -25,9 +27,15 @@ import {
   parseOpencodeProvider,
   opencodeProjectConfigRoots,
   opencodeConfigRoots,
+  readModelsDevUpstreams,
 } from '../../src/cli/opencode-providers';
 
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'opencode-providers-test-'));
+
+// node:sqlite 可用性（生产代码同款加载方式；vitest 跑在宿主 node 上）
+const nodeSqliteAvailable = (() => {
+  try { createRequire(process.execPath)('node:sqlite'); return true; } catch { return false; }
+})();
 
 afterAll(() => {
   try { fs.rmSync(TMP, { recursive: true, force: true }); } catch { /* best-effort */ }
@@ -69,7 +77,7 @@ describe('readCustomProvidersFromRoots', () => {
       `        "baseURL": "https://gw.example.com/v1",`,
       '        "apiKey": "secret-1234"',
       '      },',
-      '      "models": { "glm-5.3": { "name": "GLM 5.3" } }',
+      '      "models": { "model-a1": { "name": "Model A1" } }',
       '    }',
       '  }',
       '}',
@@ -136,15 +144,15 @@ describe('opencodeProjectConfigRoots', () => {
     expect(roots).toContain(path.parse(leaf).root); // 文件系统根目录
     expect(roots.length % 2).toBe(0); // 每层产出 <dir> 与 <dir>/.opencode 成对
   });
-  it('项目级 .opencode/opencode.json 自定义 provider 被识别（客户现场 huoshan-ai-gateway）', () => {
+  it('项目级 .opencode/opencode.json 自定义 provider 被识别（项目级私有配置场景）', () => {
     const proj = path.join(TMP, 'proj-dot-opencode');
     fs.mkdirSync(path.join(proj, '.git'), { recursive: true });
     fs.mkdirSync(path.join(proj, '.opencode'), { recursive: true });
     fs.writeFileSync(path.join(proj, '.opencode', 'opencode.json'), JSON.stringify({
-      provider: { 'huoshan-ai-gateway': { options: { baseURL: 'https://ark.cn-beijing.volces.com/api/v3' } } },
+      provider: { 'example-gateway': { options: { baseURL: 'https://upstream.example.com/api/v3' } } },
     }));
     expect(readCustomProvidersFromRoots(opencodeProjectConfigRoots(proj)))
-      .toEqual({ 'huoshan-ai-gateway': 'https://ark.cn-beijing.volces.com/api/v3' });
+      .toEqual({ 'example-gateway': 'https://upstream.example.com/api/v3' });
   });
   it('项目级 opencode.json（根级）与全局同名 provider 冲突时项目优先', () => {
     const proj = path.join(TMP, 'proj-precedence');
@@ -183,27 +191,27 @@ describe('opencodeProjectConfigRoots', () => {
 describe('readAuthProvidersFromFile', () => {
   it('凭据对象才算 provider；标量值忽略；缺失容错', () => {
     const f = path.join(TMP, 'auth.json');
-    fs.writeFileSync(f, JSON.stringify({ 'alibaba-cn': { type: 'api' }, 'zhipuai-coding-plan': {}, junk: 'scalar' }));
-    expect(readAuthProvidersFromFile(f)).toEqual(['alibaba-cn', 'zhipuai-coding-plan']);
+    fs.writeFileSync(f, JSON.stringify({ 'example-cn': { type: 'api' }, 'example-coding-plan': {}, junk: 'scalar' }));
+    expect(readAuthProvidersFromFile(f)).toEqual(['example-cn', 'example-coding-plan']);
     expect(readAuthProvidersFromFile(path.join(TMP, 'no-auth.json'))).toEqual([]);
   });
 });
 
 describe('resolveProviderIds', () => {
-  const auth = ['alibaba-cn', 'zhipuai-coding-plan'];
+  const auth = ['example-cn', 'example-coding-plan'];
   const custom = { gateway: 'https://gw.example.com/v1' };
 
   it('客户现场回归：无 -m 时 auth ∪ custom —— gateway 必在覆盖列表', () => {
     const ids = resolveProviderIds({ profile: 'opencode', agentArgs: [], authProviders: auth, customProviders: custom });
     expect(ids).toContain('gateway');
-    expect(ids).toContain('alibaba-cn');
-    expect(ids).toContain('zhipuai-coding-plan');
+    expect(ids).toContain('example-cn');
+    expect(ids).toContain('example-coding-plan');
   });
   it('-m provider/model 精确优先（只覆盖该 provider）', () => {
-    expect(resolveProviderIds({ profile: 'opencode', agentArgs: ['-m', 'gateway/glm-5.3'], authProviders: auth, customProviders: custom }))
+    expect(resolveProviderIds({ profile: 'opencode', agentArgs: ['-m', 'gateway/model-a1'], authProviders: auth, customProviders: custom }))
       .toEqual(['gateway']);
-    expect(parseOpencodeProvider(['-m=alibaba-cn/glm-5.2'])).toBe('alibaba-cn');
-    expect(parseOpencodeProvider(['--model', 'gateway/glm-5.3'])).toBe('gateway');
+    expect(parseOpencodeProvider(['-m=example-cn/model-a2'])).toBe('example-cn');
+    expect(parseOpencodeProvider(['--model', 'gateway/model-a1'])).toBe('gateway');
   });
   it('cannbot 恒含内建 cannbot provider', () => {
     expect(resolveProviderIds({ profile: 'cannbot', agentArgs: [], authProviders: [], customProviders: {} }))
@@ -211,5 +219,114 @@ describe('resolveProviderIds', () => {
   });
   it('全空 = 不可捕获（调用方 exit 2 的前置条件）', () => {
     expect(resolveProviderIds({ profile: 'opencode', agentArgs: [], authProviders: [], customProviders: {} })).toEqual([]);
+  });
+});
+
+// ── opencode 2.x models.dev catalog 读取（内建 provider upstream 发现）──
+// 2.x 注册表移出二进制后，upstream 改从 catalog 磁盘缓存读：
+//   ① opencode.db kv（node:sqlite；不可用/打开失败 → ② raw 字节扫描）
+//   ③ legacy models.json
+// 伪 db 文件（非 sqlite 字节）在 ① 必败 → 恒走 ②，新旧 node 行为一致，
+// 作为跨环境确定性夹具；① 的正路径用真 sqlite 库（skipIf 门控）。
+const KV_KEY = 'models-dev:catalog';
+const CATALOG = {
+  'example-cn': { id: 'example-cn', npm: '@ai-sdk/openai-compatible', api: 'https://catalog.example.com/compatible-mode/v1' },
+  'example-coding-plan': { id: 'example-coding-plan', npm: '@ai-sdk/openai-compatible', api: 'https://catalog.example.com/api/coding/paas/v4' },
+  anthropic: { id: 'anthropic', npm: '@opencode/ai/providers/anthropic' }, // 无 api（SDK 硬编码端点）
+};
+
+// 伪 opencode.db：key 列值与 value 列值相邻（sqlite 记录体内两列间无分隔
+// 字节，实测真实库形态）。digestOverride 传 null 可省略 digest 字段。
+function writeFakeKvDb(dataDir: string, catalog: unknown, digestOverride?: string | null): void {
+  fs.mkdirSync(dataDir, { recursive: true });
+  const body = JSON.stringify(catalog);
+  const entry: Record<string, unknown> = { updatedAt: 1759000000000, body };
+  if (digestOverride !== null) {
+    entry.digest = digestOverride ?? crypto.createHash('sha256').update(Buffer.from(body, 'latin1')).digest('hex');
+  }
+  fs.writeFileSync(path.join(dataDir, 'opencode.db'),
+    `not-a-sqlite-db\x00\x01 leading noise ${KV_KEY}${JSON.stringify(entry)} trailing noise \xff\xfe`);
+}
+
+function writeModelsJson(cacheDir: string, catalog: unknown): void {
+  fs.mkdirSync(cacheDir, { recursive: true });
+  fs.writeFileSync(path.join(cacheDir, 'models.json'), JSON.stringify(catalog));
+}
+
+// 真 sqlite 库（node:sqlite 生成）；catalog 传 null = 无 kv 行（1.x 时代
+// 库 / 短命运行未写缓存的形态）
+function writeRealKvDb(dataDir: string, catalog: unknown): void {
+  fs.mkdirSync(dataDir, { recursive: true });
+  const { DatabaseSync } = createRequire(process.execPath)('node:sqlite') as {
+    DatabaseSync: new (p: string) => { exec(sql: string): void; prepare(sql: string): { run(...p: unknown[]): unknown }; close(): void };
+  };
+  const db = new DatabaseSync(path.join(dataDir, 'opencode.db'));
+  try {
+    db.exec('CREATE TABLE kv (key TEXT PRIMARY KEY, value TEXT NOT NULL, time_created INTEGER, time_updated INTEGER)');
+    if (catalog) {
+      const body = JSON.stringify(catalog);
+      const digest = crypto.createHash('sha256').update(Buffer.from(body, 'utf8')).digest('hex');
+      db.prepare('INSERT INTO kv (key, value) VALUES (?, ?)').run(KV_KEY, JSON.stringify({ updatedAt: 1759000000000, digest, body }));
+    }
+  } finally { db.close(); }
+}
+
+describe('readModelsDevUpstreams（opencode 2.x catalog 缓存）', () => {
+  it('raw 扫描路径：伪 db（key/value 相邻 + digest 吻合）→ {id: api}；无 api 条目跳过', () => {
+    const dataDir = path.join(TMP, 'md-scrape');
+    writeFakeKvDb(dataDir, CATALOG);
+    const r = readModelsDevUpstreams({ dataDir, cacheDir: path.join(TMP, 'md-scrape-cache') });
+    expect(r).toEqual({
+      'example-cn': 'https://catalog.example.com/compatible-mode/v1',
+      'example-coding-plan': 'https://catalog.example.com/api/coding/paas/v4',
+    });
+  });
+
+  it('digest 不符 → 拒绝（raw 扫描碎片/损坏防护）→ 落到 models.json', () => {
+    const dataDir = path.join(TMP, 'md-bad-digest');
+    writeFakeKvDb(dataDir, CATALOG, 'deadbeef'.repeat(8));
+    const cacheDir = path.join(TMP, 'md-bad-digest-cache');
+    writeModelsJson(cacheDir, { 'example-cn': { api: 'https://fallback.example.com/v1' } });
+    const r = readModelsDevUpstreams({ dataDir, cacheDir });
+    expect(r).toEqual({ 'example-cn': 'https://fallback.example.com/v1' });
+  });
+
+  it('digest 字段缺失（schema 演进容错）→ 尽力接受', () => {
+    const dataDir = path.join(TMP, 'md-no-digest');
+    writeFakeKvDb(dataDir, CATALOG, null);
+    const r = readModelsDevUpstreams({ dataDir, cacheDir: path.join(TMP, 'md-no-digest-cache') });
+    expect(r?.['example-coding-plan']).toBe('https://catalog.example.com/api/coding/paas/v4');
+  });
+
+  it('优先级：db kv 命中优先于 legacy models.json', () => {
+    const dataDir = path.join(TMP, 'md-prio');
+    writeFakeKvDb(dataDir, CATALOG);
+    const cacheDir = path.join(TMP, 'md-prio-cache');
+    writeModelsJson(cacheDir, { 'example-cn': { api: 'https://stale.example.com/v1' } });
+    const r = readModelsDevUpstreams({ dataDir, cacheDir });
+    expect(r?.['example-cn']).toBe('https://catalog.example.com/compatible-mode/v1');
+  });
+
+  it('全线 miss → null（调用方 warn 兜底）', () => {
+    expect(readModelsDevUpstreams({ dataDir: path.join(TMP, 'md-none'), cacheDir: path.join(TMP, 'md-none-cache') })).toBeNull();
+  });
+
+  it.skipIf(!nodeSqliteAvailable)('node:sqlite 路径：真 sqlite 库 kv 行 → 正读（2.26GB 活库/WAL 场景的同构路径）', () => {
+    const dataDir = path.join(TMP, 'md-sqlite');
+    writeRealKvDb(dataDir, CATALOG);
+    const r = readModelsDevUpstreams({ dataDir, cacheDir: path.join(TMP, 'md-sqlite-cache') });
+    expect(r).toEqual({
+      'example-cn': 'https://catalog.example.com/compatible-mode/v1',
+      'example-coding-plan': 'https://catalog.example.com/api/coding/paas/v4',
+    });
+  });
+
+  it.skipIf(!nodeSqliteAvailable)('真库无 kv 行（短命运行未写缓存）→ 落到 models.json', () => {
+    const dataDir = path.join(TMP, 'md-sqlite-empty');
+    writeRealKvDb(dataDir, null);
+    const cacheDir = path.join(TMP, 'md-sqlite-empty-cache');
+    writeModelsJson(cacheDir, { 'example-cn': { api: 'https://legacy.example.com/v1' } });
+    const r = readModelsDevUpstreams({ dataDir, cacheDir });
+    expect(r).toEqual({ 'example-cn': 'https://legacy.example.com/v1' });
   });
 });
