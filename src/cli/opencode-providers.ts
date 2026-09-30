@@ -21,7 +21,9 @@
 // 自定义 provider 的真实上游 baseURL 从配置本体读（不在 opencode 二进制里，
 // binary strings 扫描必 miss）。
 import fs from 'node:fs';
+import crypto from 'node:crypto';
 import path from 'node:path';
+import { createRequire } from 'node:module';
 
 // JSONC 注释剥离（字符串感知）：opencode.jsonc 允许 // 行注释与 /* */ 块
 // 注释，但配置值里的 URL（"https://…"）自带 `//` —— 裸正则替换会把 URL
@@ -170,4 +172,193 @@ export function opencodeConfigRoots(): string[] {
     roots.push(path.join(base, 'cannbot'), path.join(base, 'opencode'));
   }
   return roots;
+}
+
+// ── opencode 2.x：models.dev catalog（内建 provider 元数据的运行时来源）──
+//
+// 2.x 起内建 provider 注册表不再以 1.x 的
+//   id:"<pid>",env:[...],npm:"...",api:"<baseURL>"
+// JS 字面量嵌在二进制里（实测 2.0.18：该形态 0 命中），内建 provider 的
+// baseURL 改从 models.dev catalog 解析（https://models.opencode.ai/api.json，
+// 条目的 api 字段 → provider 默认 baseURL）。opencode 自身的加载链：
+// --models-dev 文件 → kv 缓存 → 内嵌 snapshot → 网络拉取；kv 缓存由服务
+// 进程的后台 refresh 循环异步写入（快进快出的短命令可能来不及写，实测
+// `opencode models` 30s 内退出无写入）。
+// cpx 镜像其磁盘来源（只读用户自己的数据，不联网、不凭空造 URL）：
+//   ① <dataDir>/opencode.db 的 kv 表（key=models-dev:catalog，node:sqlite
+//      只读；实测 2.26GB 活库 + WAL 可见性 OK）
+//   ② 同文件 raw 字节扫描（node:sqlite 不可用的老 node 兜底；记录跨
+//      overflow 页非连续时 JSON 截断/digest 不符 → 弃，fail-safe）
+//   ③ <cacheDir>/models.json（1.x 风格扁平缓存；新旧版本混装的机器上
+//      存在，实测与 catalog 语义同源）
+// 全 miss → null（调用方 warn + CANNBOT_PROXY_OPENAI_UPSTREAM 兜底）。
+// 已知限制：catalog 并非每个 provider 都带 api（实测 225 个中 26 个无，
+// 如 anthropic——其 SDK 硬编码默认端点），这些依旧走 warn 路径。
+const MODELS_DEV_KV_KEY = 'models-dev:catalog';
+
+// node:sqlite 最小面（避免静态 import 依赖 @types/node 的版本面；老 node
+// 上模块不存在 → require 抛错 → null → 走 raw 扫描兜底）
+interface SqliteStatement { get(...params: unknown[]): unknown }
+interface SqliteDatabaseSync { prepare(sql: string): SqliteStatement; close(): void }
+interface NodeSqliteModule { DatabaseSync: new (p: string, opts?: { readOnly?: boolean }) => SqliteDatabaseSync }
+
+let cachedNodeSqlite: NodeSqliteModule | null | undefined;
+function nodeSqlite(): NodeSqliteModule | null {
+  if (cachedNodeSqlite !== undefined) return cachedNodeSqlite;
+  try {
+    // 基址对内建模块解析无影响（node:sqlite 恒可解析，与 require 发起
+    // 位置无关）；node <22.5 / 23.4 前未开 flag 时抛错
+    cachedNodeSqlite = createRequire(process.execPath)('node:sqlite') as NodeSqliteModule;
+  } catch { cachedNodeSqlite = null; }
+  return cachedNodeSqlite;
+}
+
+// catalog（JSON 字符串或已解析对象）→ {providerId: api}；api 缺失（SDK
+// 硬编码默认端点，如 anthropic）或非 http(s) 的条目跳过。
+function parseModelsDevCatalog(catalog: unknown): Record<string, string> | null {
+  let cat = catalog;
+  if (typeof cat === 'string') {
+    try { cat = JSON.parse(cat); } catch { return null; }
+  }
+  if (!cat || typeof cat !== 'object') return null;
+  const out: Record<string, string> = {};
+  for (const [id, def] of Object.entries(cat as Record<string, unknown>)) {
+    const api = (def as { api?: unknown } | null)?.api;
+    if (typeof api === 'string' && /^https?:\/\//.test(api)) out[id] = api;
+  }
+  return Object.keys(out).length > 0 ? out : null;
+}
+
+// kv 值形态 {updatedAt, digest, body}（body 是 catalog 的 JSON 字符串；
+// digest = sha256(body 原始字节)，实测 2.0.18）。digest 校验防 raw 扫描的
+// 碎片损伤静默产出错误 upstream；digest 字段缺失时尽力接受（schema 演进
+// 容错）。bodyByteEncoding：sqlite 路径 body 是正经 utf-8 解码的 JS 字符串；
+// raw 扫描路径是 latin1 解码（bijective），各自按原编码还原字节后哈希。
+function parseModelsDevKvValue(value: string, bodyByteEncoding: 'utf8' | 'latin1'): Record<string, string> | null {
+  let parsed: { digest?: unknown; body?: unknown };
+  try { parsed = JSON.parse(value); } catch { return null; }
+  if (!parsed || typeof parsed !== 'object' || typeof parsed.body !== 'string') return null;
+  if (typeof parsed.digest === 'string') {
+    const actual = crypto.createHash('sha256').update(Buffer.from(parsed.body, bodyByteEncoding)).digest('hex');
+    if (actual !== parsed.digest) return null;
+  }
+  return parseModelsDevCatalog(parsed.body);
+}
+
+// raw 扫描的读取上限/块大小（catalog 实测 5.9MB，留量级余量）
+const SCRAPE_CHUNK_BYTES = 8 * 1024 * 1024;
+const SCRAPE_TAIL_BYTES = 64 * 1024 * 1024;
+const SCRAPE_VALUE_CAP_BYTES = 64 * 1024 * 1024;
+
+// 从 fd 的 start 位置顺序读取并平衡扫描出完整 JSON（跨 chunk 状态机：
+// depth/inString/escape；sqlite 记录里 key 列值与 value 列值相邻无分隔，
+// 值溢出到 overflow 页时字节在文件里不保证连续——扫描不出/解析失败由
+// 调用方弃）。返回 latin1 解码的 JSON 文本。
+function extractBalancedJsonAt(fd: number, start: number): string | null {
+  let pos = start;
+  let acc = '';
+  let depth = 0;
+  let inString = false;
+  let escape = false;
+  const buf = Buffer.allocUnsafe(SCRAPE_CHUNK_BYTES);
+  while (pos - start < SCRAPE_VALUE_CAP_BYTES) {
+    let len: number;
+    try {
+      len = fs.readSync(fd, buf, 0, Math.min(buf.length, SCRAPE_VALUE_CAP_BYTES - (pos - start)), pos);
+    } catch { return null; }
+    if (len <= 0) return null;
+    const chunk = buf.toString('latin1', 0, len);
+    acc += chunk;
+    let i = 0;
+    for (; i < chunk.length; i++) {
+      const c = chunk[i];
+      if (inString) {
+        if (escape) escape = false;
+        else if (c === '\\') escape = true;
+        else if (c === '"') inString = false;
+      } else if (c === '"') inString = true;
+      else if (c === '{') depth++;
+      else if (c === '}') { if (--depth === 0) return acc.slice(0, acc.length - (chunk.length - i - 1)); }
+    }
+    pos += len;
+  }
+  return null;
+}
+
+// raw 字节扫描提取 kv 值（latin1 空间：标记/结构/转义全 ASCII，非 ASCII
+// 只表现为字符串值内的 mojibake，api URL 恒 ASCII 不受影响）。尾部 64MB
+// 优先（kv 行多在近期写入的页——catalog 由后台 refresh 周期刷新），失败
+// 再全量。多个命中逐个尝试（freelist 里的陈旧副本解析失败/digest 不符自
+// 动跳过）。2GiB+ 的库 readFileSync 直接失败（ERR_FS_FILE_TOO_LARGE），
+// 必须 chunked。
+function scrapeModelsDevKvValue(dbPath: string): string | null {
+  let size: number;
+  try { size = fs.statSync(dbPath).size; } catch { return null; }
+  const regions: Array<[number, number]> = [];
+  if (size > SCRAPE_TAIL_BYTES) regions.push([size - SCRAPE_TAIL_BYTES, size]);
+  regions.push([0, size]);
+  const needle = MODELS_DEV_KV_KEY + '{"updatedAt"';
+  for (const [from, to] of regions) {
+    let fd: number | undefined;
+    try {
+      fd = fs.openSync(dbPath, 'r');
+      let pos = from;
+      let carry = '';
+      while (pos < to) {
+        const len = Math.min(SCRAPE_CHUNK_BYTES, to - pos);
+        const buf = Buffer.allocUnsafe(len);
+        fs.readSync(fd, buf, 0, len, pos);
+        const chunk = carry + buf.toString('latin1');
+        let searchFrom = 0;
+        for (;;) {
+          const hit = chunk.indexOf(needle, searchFrom);
+          if (hit < 0) break;
+          const value = extractBalancedJsonAt(fd, pos - carry.length + hit + MODELS_DEV_KV_KEY.length);
+          if (value !== null) return value;
+          searchFrom = hit + 1;
+        }
+        carry = chunk.slice(Math.max(0, chunk.length - (needle.length + 64)));
+        pos += len;
+      }
+    } catch { return null; }
+    finally {
+      if (fd !== undefined) { try { fs.closeSync(fd); } catch { /* */ } }
+    }
+  }
+  return null;
+}
+
+// ① node:sqlite 只读读 kv 值。失败一律 null（文件不存在/非 sqlite 库/无
+// kv 表——1.x 时代的库/行不存在/忙锁），由调用方落下一层。
+function readKvValueViaSqlite(dbPath: string): string | null {
+  const mod = nodeSqlite();
+  if (!mod) return null;
+  let db: SqliteDatabaseSync | null = null;
+  try {
+    db = new mod.DatabaseSync(dbPath, { readOnly: true });
+    const row = db.prepare('SELECT value FROM kv WHERE key = ?').get(MODELS_DEV_KV_KEY) as { value?: unknown } | undefined;
+    return row && typeof row.value === 'string' ? row.value : null;
+  } catch { return null; }
+  finally { if (db) { try { db.close(); } catch { /* */ } } }
+}
+
+// models.dev catalog 的磁盘来源读取（路径注入可测）：
+// <dataDir>/opencode.db（kv 表 / raw 扫描）→ <cacheDir>/models.json。
+// 任何一层解析成功即返回 {providerId: api}；全线 miss 返回 null。
+export function readModelsDevUpstreams(sources: { dataDir: string; cacheDir: string }): Record<string, string> | null {
+  const dbPath = path.join(sources.dataDir, 'opencode.db');
+  const viaSqlite = readKvValueViaSqlite(dbPath);
+  if (viaSqlite !== null) {
+    const r = parseModelsDevKvValue(viaSqlite, 'utf8');
+    if (r) return r;
+  }
+  const viaScrape = scrapeModelsDevKvValue(dbPath);
+  if (viaScrape !== null) {
+    const r = parseModelsDevKvValue(viaScrape, 'latin1');
+    if (r) return r;
+  }
+  try {
+    const text = fs.readFileSync(path.join(sources.cacheDir, 'models.json'), 'utf-8');
+    return parseModelsDevCatalog(JSON.parse(text));
+  } catch { return null; }
 }

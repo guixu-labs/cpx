@@ -15,7 +15,7 @@ import { fileURLToPath } from 'node:url';
 import { sessionFilePath, sidsFilePath, resolveCapturePath, compressCaptureFile, readCaptureText, sessionMetaPath } from '../writer.ts';
 import { VERSION, VERSION_DISPLAY } from '../version.ts';
 import { redactString } from '../redactor.ts';
-import { parseOpencodeProvider, readAuthProvidersFromFile, readCustomProvidersFromRoots, resolveProviderIds, opencodeConfigRoots } from './opencode-providers';
+import { parseOpencodeProvider, readAuthProvidersFromFile, readCustomProvidersFromRoots, resolveProviderIds, opencodeConfigRoots, readModelsDevUpstreams } from './opencode-providers';
 import { resolveTsxLoader } from './tsx-launcher';
 import { parseArgs } from './cpx-args';
 import { runCompleteMain } from './cpx-complete';
@@ -182,7 +182,9 @@ function startSessionProxy(sid: string, anthropicUpstream: string, openaiUpstrea
 
 interface LaunchPlan {
   env: Record<string, string>;
-  extraArgs: string[];
+  // 完整 agent 启动参数（含 agentArgs）。原 extraArgs 前缀模型改为全量：
+  // opencode 2.x 的 --standalone 必须按"子命令前/后"位置插入，前缀模型装不下。
+  args: string[];
 }
 
 // opencode stores provider credentials in auth.json (XDG data dir). Its keys
@@ -195,6 +197,14 @@ interface LaunchPlan {
 function opencodeDataDir(): string {
   const xdg = process.env.XDG_DATA_HOME;
   return xdg ? path.join(xdg, 'opencode') : path.join(os.homedir(), '.local', 'share', 'opencode');
+}
+
+// opencode 缓存目录（XDG 感知）：1.x 时代 models.dev catalog 的扁平缓存
+// （models.json）落在这里；2.x 改存 opencode.db 的 kv 表，但新旧版本混装
+// 的机器上该文件仍可能存在且新鲜（readModelsDevUpstreams 的第三来源）。
+function opencodeCacheDir(): string {
+  const xdg = process.env.XDG_CACHE_HOME;
+  return xdg ? path.join(xdg, 'opencode') : path.join(os.homedir(), '.cache', 'opencode');
 }
 
 // 收集 opencode 的可调用 provider 候选（模块级缓存：auth.json / 用户配置
@@ -313,12 +323,113 @@ function discoverProviderUpstreams(providerIds: string[]): Record<string, string
     }
     for (const id of providerIds) if (all[id]) out[id] = all[id];
   }
+  // opencode 2.x：内建 provider 注册表移出二进制（上面的 strings 扫描必
+  // miss），从 models.dev catalog 的磁盘缓存补齐（opencode.db kv → raw
+  // 扫描 → legacy models.json，详见 opencode-providers.ts）。1.x 不受影响
+  // （strings 已命中，catalog 只补缺；二进制才是被 spawn 的权威源，先到先得）。
+  const missing = providerIds.filter((id) => !out[id]);
+  if (missing.length > 0) {
+    const catalog = readModelsDevUpstreams({ dataDir: opencodeDataDir(), cacheDir: opencodeCacheDir() });
+    if (catalog) for (const id of missing) if (catalog[id]) out[id] = catalog[id];
+  }
   // 自定义 provider 的 upstream 从配置本体叠加（配置优先于二进制结果）
   for (const id of providerIds) if (custom[id]) out[id] = custom[id];
   return out;
 }
 
-function buildLaunch(profile: AgentProfile, proxyPort: number, claude: ClaudeSettings, agentArgs: string[] = []): LaunchPlan {
+// ── opencode 2.x 客户端-服务端架构隔离（--standalone 特性探测）──
+//
+// opencode 2.x 起 TUI 只是客户端：默认经 ~/.local/state/opencode/service.json
+// 发现并连接常驻的共享后台服务，LLM 调用由服务进程发出——它不在 cpx 的子
+// 进程树内，读不到注入的 OPENCODE_CONFIG_CONTENT，流量直连上游、捕获 0 字节
+// （实测 ses_f13dcb27：会话落入共享服务的数据根，cpx 代理零流量）。只有本机
+// 恰无热服务时才碰巧走"客户端自建服务"的继承路径，故 2.x 上几乎必然失败。
+// --standalone 让客户端改用随自身进程树起的私有服务（serve 引导实测：数据根
+// 跟随进程 env），注入恢复生效；退出干净，且不写 service.json（不劫持共享
+// 服务的注册，实测确认）。
+//
+// 1.x（及未跟进该架构的 fork）不认识此 flag，未知 flag 会让 opencode 打印
+// help 直接退出（零捕获，见 cpx-args.ts 的先例注释）——必须探测后追加，
+// 绝不无条件注入；探测失败一律视为"不支持"（方向安全：退化为 1.x 现状）。
+//
+// flag 位置敏感（opencode 解析器按位置归属 flag，实测 2.0.18）：
+//   opencode --standalone / --standalone <dir>   ✓ 根位置（TUI 默认命令）
+//   opencode run --standalone …                  ✓ 子命令后
+//   opencode --standalone run …                  ✗ Unrecognized flag
+//
+// help 判定必须用行首锚定的定义行（^\s*--standalone\b）：每个子命令的
+// --print-logs 描述都提到 "(server logs require --standalone)"，朴素包含
+// 匹配会把 serve/auth/session 误判为支持（实测仅 root/run/mini/api/models
+// 真支持）。
+// 行首锚定的定义行判定：只允许行内缩进（[ \t] 不跨行），且 flag 名后不能
+// 跟字词/连字符（防 --standalone-mode 之类误命中）。
+const STANDALONE_FLAG_RE = /^[ \t]*--standalone(?![\w-])/m;
+const HELP_PROBE_TIMEOUT_MS = 15_000;
+
+const rootHelpCache = new Map<string, string | null>();
+const subHelpCache = new Map<string, string | null>();
+
+// <agentCmd> [args…] --help 的探测结果（按进程缓存）。失败/非零退出 → null。
+function probeHelp(agentCmd: string, args: string[], cache: Map<string, string | null>, cacheKey: string): string | null {
+  const hit = cache.get(cacheKey);
+  if (hit !== undefined) return hit;
+  let text: string | null = null;
+  try {
+    const r = spawnSync(agentCmd, [...args, '--help'], { encoding: 'utf-8', timeout: HELP_PROBE_TIMEOUT_MS });
+    if (r.status === 0) text = `${r.stdout ?? ''}\n${r.stderr ?? ''}`;
+  } catch { text = null; }
+  cache.set(cacheKey, text);
+  return text;
+}
+
+// help 的 SUBCOMMANDS 段解析（"  run    Run OpenCode with a message" →
+// {"run"}；"  upgrade, update    …" 的别名逐个入集）。缩进但不匹配的行视为
+// 描述折行跳过，顶格行（下一节标题）终止。解析不出（无该段/零条目）返回
+// null——调用方据此放弃注入（宁可不捕获，不打坏启动）。
+function parseSubcommandNames(help: string | null): Set<string> | null {
+  if (!help) return null;
+  const lines = help.split('\n');
+  const idx = lines.findIndex((l) => l.trim() === 'SUBCOMMANDS');
+  if (idx < 0) return null;
+  const names = new Set<string>();
+  for (let i = idx + 1; i < lines.length; i++) {
+    const line = lines[i];
+    if (line.trim() === '') continue;
+    if (!line.startsWith(' ')) break; // 顶格 = 下一节（GLOBAL FLAGS 等）
+    const m = line.match(/^\s+([\w][\w,-]*(?:,\s*[\w][\w,-]*)*)\s{2,}/);
+    if (!m) continue; // 缩进但不匹配 = 描述折行
+    for (const n of m[1].split(/\s*,\s*/)) names.add(n);
+  }
+  return names.size > 0 ? names : null;
+}
+
+// opencode 系启动参数的 --standalone 注入。返回完整的最终 agentArgs：
+//   空参 / 根 flag 开头（-s/--continue…）→ TUI 默认命令，根位置前置
+//   子命令开头（run/mini…）→ 紧跟子命令后插入；该子命令不支持则不注入
+//   目录位置参数 → 根位置前置（实测 flag 先于位置参数可解析）
+//   子命令集合解析不出 → 一律不注入（fail-safe）
+function withStandalone(agentCmd: string, agentArgs: string[]): string[] {
+  // 用户已显式传入该 flag：原样返回（不重复注入，启动日志的"已注入"判断
+  // 也以 args 是否含该 flag 为准，语义保持真值）
+  if (agentArgs.includes('--standalone')) return agentArgs;
+  const rootHelp = probeHelp(agentCmd, [], rootHelpCache, agentCmd);
+  const rootSupported = rootHelp !== null && STANDALONE_FLAG_RE.test(rootHelp);
+  const first = agentArgs[0];
+  if (first === undefined || first.startsWith('-')) {
+    return rootSupported ? ['--standalone', ...agentArgs] : agentArgs;
+  }
+  const subcommands = parseSubcommandNames(rootHelp);
+  if (subcommands === null) return agentArgs;
+  if (!subcommands.has(first)) {
+    return rootSupported ? ['--standalone', ...agentArgs] : agentArgs;
+  }
+  const subHelp = probeHelp(agentCmd, [first], subHelpCache, `${agentCmd}\0${first}`);
+  return subHelp !== null && STANDALONE_FLAG_RE.test(subHelp)
+    ? [first, '--standalone', ...agentArgs.slice(1)]
+    : agentArgs;
+}
+
+function buildLaunch(profile: AgentProfile, proxyPort: number, claude: ClaudeSettings, agentArgs: string[] = [], agentCmd = ''): LaunchPlan {
   // Per-session port: no sid encoded in URL path. The proxy pins sid via env,
   // so base_url is a clean host (survives SDK URL normalization).
   const proxyUrl = `http://127.0.0.1:${proxyPort}`;
@@ -334,7 +445,7 @@ function buildLaunch(profile: AgentProfile, proxyPort: number, claude: ClaudeSet
       if (claude.model) settingsEnv.ANTHROPIC_MODEL = claude.model;
       return {
         env: {},
-        extraArgs: ['--settings', JSON.stringify({ env: settingsEnv })],
+        args: ['--settings', JSON.stringify({ env: settingsEnv }), ...agentArgs],
       };
     }
     case 'opencode':
@@ -363,7 +474,9 @@ function buildLaunch(profile: AgentProfile, proxyPort: number, claude: ClaudeSet
       const providerIds = resolveProviderIdsFor(profile, agentArgs);
       const provider: Record<string, { options: { baseURL: string } }> = {};
       for (const id of providerIds) provider[id] = { options: { baseURL: `${proxyUrl}/${id}/` } };
-      return { env: { OPENCODE_CONFIG_CONTENT: JSON.stringify({ provider }) }, extraArgs: [] };
+      // 2.x 必须 --standalone（私有服务）才能让上面的注入落到真正发 LLM 调用
+      // 的进程上；1.x 无此 flag，探测后按位置规则注入（见 withStandalone）。
+      return { env: { OPENCODE_CONFIG_CONTENT: JSON.stringify({ provider }) }, args: withStandalone(agentCmd, agentArgs) };
     }
     case 'codex': {
       // codex 有两种 auth：ChatGPT 登录（~/.codex/auth.json，默认）或 API key。
@@ -380,14 +493,14 @@ function buildLaunch(profile: AgentProfile, proxyPort: number, claude: ClaudeSet
           'model_providers.cpx_proxy.wire_api="responses"',
           'model_providers.cpx_proxy.requires_openai_auth=false',
         ].flatMap((o) => ['-c', o]);
-        return { env: {}, extraArgs: overrides };
+        return { env: {}, args: [...overrides, ...agentArgs] };
       }
       // ChatGPT 登录用户：仅覆盖 base_url，不碰 auth
-      return { env: {}, extraArgs: ['-c', `openai_base_url="${proxyUrl}/v1"`] };
+      return { env: {}, args: ['-c', `openai_base_url="${proxyUrl}/v1"`, ...agentArgs] };
     }
     case 'openai':
     case 'generic':
-      return { env: { OPENAI_BASE_URL: proxyUrl }, extraArgs: [] };
+      return { env: { OPENAI_BASE_URL: proxyUrl }, args: agentArgs };
   }
 }
 
@@ -737,7 +850,7 @@ async function main(): Promise<void> {
 
   const sessionProxy = await startSessionProxy(sid, claude.upstream, openaiUpstream, providerUpstreams);
   const jsonlPath = sessionFilePath(sid);
-  const { env, extraArgs } = buildLaunch(profile, sessionProxy.port, claude, agentArgs);
+  const { env, args } = buildLaunch(profile, sessionProxy.port, claude, agentArgs, agentCmd);
 
   const displayUpstream = profile === 'opencode' || profile === 'cannbot' || profile === 'openai' || profile === 'generic' || profile === 'codex'
     ? (profile === 'cannbot' ? (providerUpstreams['cannbot'] ?? openaiUpstream) : openaiUpstream)
@@ -809,8 +922,11 @@ async function main(): Promise<void> {
     for (const id of ids) {
       const up = providerUpstreams[id];
       if (up) log(`    ${id} → ${up}`);
-      else log(`    ${id} → (upstream not found in binary/config; will use default ${openaiUpstream} — set CANNBOT_PROXY_OPENAI_UPSTREAM if wrong)`);
+      else log(`    ${id} → (upstream not found in binary/models.dev cache/config; will use default ${openaiUpstream} — set CANNBOT_PROXY_OPENAI_UPSTREAM if wrong)`);
     }
+    log(`  2.x isolation: ${args.includes('--standalone')
+      ? '--standalone 已注入（私有服务，OPENCODE_CONFIG_CONTENT 对发调进程生效）'
+      : '未注入（未检测到该 flag / 子命令不支持——若为 2.x 共享服务形态，捕获可能为空）'}`);
   }
   log(`proxy: http://127.0.0.1:${sessionProxy.port}  (per-session, sid pinned via env)`);
   // claude 会话的捕获文件按 claude 自己的 session id（请求头）命名 —— 与
@@ -819,9 +935,9 @@ async function main(): Promise<void> {
   log(`capture: ${PROXY_DIR}/cpx-<claude-session-id>.jsonl  (本次占位: cpx-${sid.slice(0, 8)}…)`);
   log(`  watch live: tail -F "${PROXY_DIR}"/*.jsonl`);
   const maskSecrets = (args: string[]) => args.map(a => redactString(a));
-  log(`launching: ${agentCmd} ${maskSecrets([...extraArgs, ...agentArgs]).join(' ')}`);
+  log(`launching: ${agentCmd} ${maskSecrets(args).join(' ')}`);
 
-  const child = spawn(agentCmd, [...extraArgs, ...agentArgs], {
+  const child = spawn(agentCmd, args, {
     stdio: 'inherit',
     // CPX_SESSION_ID：会话定位工牌——agent 及其 bash 工具子进程自动继承，
     // 收尾时裸跑 `cpx upload` 即可精确命中本会话（并发机器不传错别人的）
