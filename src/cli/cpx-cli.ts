@@ -21,6 +21,7 @@ import { parseArgs } from './cpx-args';
 import { runCompleteMain } from './cpx-complete';
 import { dropSessionScratch, sweepLeakedPlaceholders } from './cpx-scratch';
 import { findProxyProcs, dedupePairs, isOrphanedProc, type ProxyProc } from './proxy-procs';
+import { resolveInsightBase } from './insight-discovery';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -66,9 +67,9 @@ function runConfig(args: string[]): void {
   process.exit(2);
 }
 const CLAUDE_SETTINGS = path.join(os.homedir(), '.claude', 'settings.json');
-const INSIGHT_PORT = 21025;
-// 环境可覆写（IT 用 mock insight 走完整链路；不影响默认行为）
-const INSIGHT_BASE = process.env.CANNBOT_CPX_INSIGHT_BASE ?? `http://localhost:${INSIGHT_PORT}`;
+// 发现契约（env → 用户级端口登记 → 21025 兜底）：多人服务器上每人各自端口
+// 零配置对准自己的实例；IT 用 CANNBOT_CPX_INSIGHT_BASE 指 mock insight
+const INSIGHT_BASE = resolveInsightBase();
 
 const USAGE = `cpx ${VERSION_DISPLAY} — agent↔模型明文捕获代理编排器
 
