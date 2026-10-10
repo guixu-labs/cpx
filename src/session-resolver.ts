@@ -75,7 +75,23 @@ export interface ResolveResult {
 // MAIN session id (verified), so subagent routing stays on the emitter's
 // system-prompt check — orthogonal to sid resolution.
 const CLAUDE_SID_HEADER = 'x-claude-code-session-id';
+// dsh（DeepSeek Harness）与 claude 同为 Anthropic Messages 协议，会话 id 走
+// 自己的 header（已验证 dsh 每个模型请求都带）。它让捕获文件与 dsh 原生 session
+// （~/.dsh/sessions/…/session-<uuid>）1:1 对应；缺失时回落 pinned sid。
+const DSH_SID_HEADER = 'x-deepseek-harness-session-id';
 const SAFE_SID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
+
+/**
+ * sid 安全谓词 —— 任何【流入文件路径】的 sid 都必须先过这里。
+ *
+ * 只允许字母数字开头 + 字母数字/点/下划线/连字符(不含 `/`、不以 `.` 开头),
+ * 因此 `../x`、`a/b` 这类会被拒绝。既有防线:header sid(本文件)、
+ * claude 的 subId(md5)、dsh 的 childId(resolver 校验)。dsh 的 parentSession
+ * 来自请求 body,属不可信 wire 数据,同样必须过这里。
+ */
+export function isSafeSid(sid: string | null | undefined): sid is string {
+  return typeof sid === 'string' && SAFE_SID.test(sid);
+}
 
 export function resolveSession(
   urlPath: string,
@@ -88,6 +104,11 @@ export function resolveSession(
   const claudeSid = protocol === 'anthropic' ? headerGet(CLAUDE_SID_HEADER) : null;
   if (claudeSid && SAFE_SID.test(claudeSid)) {
     return { sid: claudeSid, protocol };
+  }
+
+  const dshSid = protocol === 'anthropic' ? headerGet(DSH_SID_HEADER) : null;
+  if (dshSid && SAFE_SID.test(dshSid)) {
+    return { sid: dshSid, protocol };
   }
 
   // opencode declares its session id via x-session-id on EVERY request, and

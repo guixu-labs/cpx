@@ -11,11 +11,11 @@ agent 子进程 ──HTTP──▶ cpx（per-session proxy）──透传──
                 ~/.cannbot-insight/proxy/cpx-<sid>.jsonl   ← 明文存档（单一事实源）
 ```
 
-定位：**wire 级明文存档**——逐字节捕获真实请求与响应（含 SSE 重组），会话结束得到可审计、可复现、可离线分析的单文件事实源；作为 [cannbot-insight](../insight) 的采集端（扩展 claude-format JSONL，insight 零改动消费）；纯透传不干预（转发与无 cpx 时逐字节一致）；框架中立（三协议四框架同一格式契约）。
+定位：**wire 级明文存档**——逐字节捕获真实请求与响应（含 SSE 重组），会话结束得到可审计、可复现、可离线分析的单文件事实源；作为 [cannbot-insight](../insight) 的采集端（扩展 claude-format JSONL，insight 零改动消费）；纯透传不干预（转发与无 cpx 时逐字节一致）；框架中立（三协议五框架同一格式契约）。
 
 ## 项目优势
 
-- **一条命令拉起捕获栈**：`cpx claude` / `cpx opencode` / `cpx cannbot` / `cpx codex`，在原有命令前加 `cpx` 即可，其他使用完全无变化
+- **一条命令拉起捕获栈**：`cpx claude` / `cpx opencode` / `cpx cannbot` / `cpx codex` / `cpx dsh`，在原有命令前加 `cpx` 即可，其他使用完全无变化
 - **捕获独立于 insight**：不需要 cannbot-insight 在运行；insight 在跑则捕获退出时自动导入并开浏览器，否则保留捕获文件待 insight Web UI 导入
 - **零残留注入**：override 只活在 cpx 起的那个进程里（claude `--settings` / opencode `OPENCODE_CONFIG_CONTENT` / codex `-c`），退出即净，不碰任何全局配置
 - **三协议支持**：Anthropic Messages、OpenAI Chat Completions、OpenAI Responses API，各自独立的 emitter 与 SSE 重组器
@@ -82,6 +82,8 @@ cpx opencode                    # opencode（无 -m 时自动覆盖 auth.json �
 cpx opencode run -m alibaba-cn/glm-5.2 "..."   # 或 -m 精确指定单个 provider
 cpx cannbot                     # CANNBot（opencode 系 CANN fork，内建 cannbot provider）
 cpx codex                       # Codex（ChatGPT 登录或 OPENAI_API_KEY 均可）
+cpx dsh headless "run the tests" # dsh / DeepSeek Harness（Anthropic Messages 协议）
+cpx dsh web                     # 同样支持 web / tui / 任意 profile，参数原样透传
 cpx -- aichat "..."             # 任意 OpenAI 兼容客户端
 cpx --agent openai -- <cmd>     # 显式指定 profile
 ```
@@ -122,7 +124,7 @@ cpx 对 agent 完全透明：转发请求与上游响应逐字节透传、密钥
 | 命令 | 说明 |
 |------|------|
 | `cpx <agent-cmd> [args...]` | 拉起捕获栈并运行 agent（命令名自动识别 profile） |
-| `cpx --agent <profile> -- <cmd>` | 显式指定 profile（`claude`/`opencode`/`cannbot`/`codex`/`openai`/`generic`） |
+| `cpx --agent <profile> -- <cmd>` | 显式指定 profile（`claude`/`opencode`/`cannbot`/`codex`/`dsh`/`openai`/`generic`） |
 | `cpx list` | 捕获会话清单：sid / 大小 / 框架 / 子代理数 / 压缩状态 |
 | `cpx status [--kill [--all]]` | insight/proxy 进程状态 + 最近捕获 + 压缩率；`--kill` 清理孤儿 proxy，`--all` 连活跃会话一起清 |
 | `cpx config [dedup on\|off]` | 查看/配置注入压缩（默认 off，热生效，只压缩捕获记录不改转发） |
@@ -223,3 +225,26 @@ proxy 测试自包含：只验证 emitter/writer/redactor 等模块的 JSON 输�
 - **model 路由 / key 池**：当前版本只透传捕获，不做 model 映射 / 多 key 路由（CCR 核心能力，留待后续）
 - **存量捕获不回洗**：redact 上线之前生成的 jsonl 不做追溯清洗，需要干净副本就重跑会话
 - **路径前缀路由依赖 SDK 行为**：opencode/ai-sdk 保留 baseURL 路径前缀（实测 1.17.x）；升级后若剥离前缀会落到单一 upstream 回退
+
+## 框架扩展
+
+**路由按协议**,而**差异按框架** —— 两者不是一一对应,这是理解本仓 emitter 结构的前提:
+
+| 协议 | 走哪个 emitter | 该协议下的框架 | 靠什么区分 |
+|------|---------------|---------------|-----------|
+| `anthropic` | `claude-emitter` | claude-code / **dsh** | `body.dsh_session_log`(body 字段) |
+| `openai` | `opencode-emitter` | opencode / **cannbot** | `userAgent` 里的 `cannbot/`(HTTP header) |
+| `responses` | `codex-emitter` | codex | 不需要(一对一) |
+
+**加一个新框架的两种做法:**
+
+1. **复用已有 emitter**(推荐,当它共用现有协议时)—— 在该 emitter 里加一个
+   **独立分支** + 一组纯函数,并在文件里用横幅标出区块边界。
+   *不得修改老框架的既有路径* —— native 路径必须逐字节不变,靠分支隔离而非约定。
+2. **新增 emitter**(该框架的协议与现有三种都不同时)—— 参照 `codex-emitter`:
+  独立重组器 + 独立 emitter,产出同一套扩展 claude 格式。
+
+**何时该把"复用缓存的框架知识"抽出去**:当同一个 emitter 里出现**第三个**框架、
+或框架区块超过 ~200 行、或出现跨框架误伤的 bug —— 此时抽 `framework/` 适配层
+(每个框架一个文件,emitter 只保留"协议 → 格式"的转换)。
+在那之前,过早抽象反而会因样本不足而设计错接口。

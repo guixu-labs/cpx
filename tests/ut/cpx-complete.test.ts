@@ -31,7 +31,7 @@ describe('completeCandidates 上下文', () => {
 
   it('--agent 值参数场景；其余值参数无候选', () => {
     expect(completeCandidates(['cpx', '--agent', ''])).toEqual(
-      ['claude', 'opencode', 'cannbot', 'codex', 'openai', 'generic'],
+      ['claude', 'opencode', 'cannbot', 'codex', 'dsh', 'openai', 'generic'],
     );
     expect(completeCandidates(['cpx', '--agent', 'c'])).toEqual(['claude', 'cannbot', 'codex']);
   });

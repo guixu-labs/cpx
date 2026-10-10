@@ -4,6 +4,10 @@
 
 ## [Unreleased]
 
+### Added
+- 【dsh 子代理建链：从 wire 取亲子血缘】dsh 把会话头作为**私有扩展字段**随每个请求发出（`body.dsh_session_log.session` = `{ id, parentSession, origin, delegationDepth }`），这是 dsh 官方代码（`dsh-session-log-deepseek` 的 `wireHeader()`）序列化的 `session.header`，与它写进原生日志的是同一对象（实测逐字段一致）。cpx 据此把子代理记录写到 **`<父sid>/subagents/<子sid>.jsonl`** —— 与 claude 的布局完全一致，insight 侧零改动即可发现。子代理名/模式取自 `subagent/descriptor` 的 `label`/`mode`。工具名归一 `subagent → Agent`（insight 的 bridge-builder 只认 `task`/`Agent`），**仅对 dsh 会话生效**（claude 路径逐字节不变）。**注意：parent 标识不在 HTTP header 里**（dsh 的请求头无任何 parent 字段），而在 body 的私有扩展字段里。验证：insight 中 Execution 出现子代理（depth=1、token 单独归因）、Turn 带 subagentName、totalSubagentCount 正确、工具调用显示为 `Agent`。已知边界：① 子 meta 的 `toolUseId` 置 null —— 曾试从父侧 `tool_result` 推导并回填（`writer.patchMetaIfExists`），因前端收益仅一个 tooltip 字段而撤掉；② `workflow` 扇出的子代理有 `parentSession`（布局正确），但父侧无 `subagent` 派发调用，dispatch 箭头依赖 insight 的时间邻近兜底
+- 【dsh（DeepSeek Harness）捕获 profile】dsh 的默认模型出口是 Anthropic Messages 协议（`api.deepseek.com/anthropic` + `/v1/messages`），故复用既有 anthropic 链路：新增 `cpx dsh` / `--agent dsh`，以 `$DEEPSEEK_BASE_URL` 把 dsh 根地址指向 proxy（profile 显式 `baseURL` 会盖过该覆盖），上游取 `$DEEPSEEK_BASE_URL` 或官方根地址；会话 id 走 dsh 自己的 `x-deepseek-harness-session-id` 头命名捕获文件；emitter 经 `CANNBOT_PROXY_AGENT_FRAMEWORK=dsh` 落 `source:"dsh-proxy"` / `meta.framework:"dsh"`（此前 anthropic 协议一律标 `claude-proxy`），insight 分类器同步识别为 dsh。Tab 补全同步。门禁：cpx ut（cpx-args / session-resolver / claude-emitter）+ insight proxy-classify
+
 ### Changed
 - 【insight 发现契约升级】自动导入目标从固定端口改为自动发现，多人服务器上各自对准自己的实例
 

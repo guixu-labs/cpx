@@ -139,7 +139,7 @@ export function emit(rec: ProxyRecord): void {
     timestamp: toISO(rec.completedAt),
     system: body.instructions ?? undefined,
     tools: Array.isArray(body.tools) ? body.tools : undefined,
-    source: proxySourceMarker(rec.protocol),
+    source: proxySourceMarker(rec.protocol, rec.request.body),
     x_lake: xLake('cc-wire-round', {
       roundIndex,
       protocol: 'responses',

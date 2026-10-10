@@ -12,7 +12,7 @@
 // hand the flag to opencode, which prints help and exits with zero capture.
 // All other positional args pass through unchanged.
 
-export type AgentProfile = 'claude' | 'opencode' | 'cannbot' | 'codex' | 'openai' | 'generic';
+export type AgentProfile = 'claude' | 'opencode' | 'cannbot' | 'codex' | 'dsh' | 'openai' | 'generic';
 
 export interface CpxArgs {
   profile: AgentProfile;
@@ -50,6 +50,7 @@ export function parseArgs(argv: string[]): CpxArgs {
     else if (base === 'opencode') profile = 'opencode';
     else if (base === 'cannbot') profile = 'cannbot';
     else if (base === 'codex') profile = 'codex';
+    else if (base === 'dsh') profile = 'dsh';
     else profile = 'generic';
   }
   return { profile: profile!, agentCmd, agentArgs };

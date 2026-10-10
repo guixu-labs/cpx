@@ -21,8 +21,8 @@ import { fileURLToPath } from 'node:url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const SUBCOMMANDS = ['list', 'ls', 'status', 'config', 'completion'];
-const AGENT_CMDS = ['claude', 'opencode', 'codex', 'cannbot'];
-const PROFILES = ['claude', 'opencode', 'cannbot', 'codex', 'openai', 'generic'];
+const AGENT_CMDS = ['claude', 'opencode', 'codex', 'cannbot', 'dsh'];
+const PROFILES = ['claude', 'opencode', 'cannbot', 'codex', 'dsh', 'openai', 'generic'];
 const TOP_FLAGS = ['--agent', '--help', '--version', '-h', '-v'];
 const VALUE_FLAGS = new Set(['--agent']);
 
