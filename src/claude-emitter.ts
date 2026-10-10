@@ -26,6 +26,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { ProxyRecord, Protocol, AnthropicContentBlock, AnthropicUsage, OpenAIUsage } from './types';
 import { sessionFilePath, sessionMetaPath, subagentFilePath, subagentMetaPath, appendClaudeLine, writeMeta, PROXY_DIR } from './writer';
+import { isSafeSid } from './session-resolver';
 
 // x_cannbay 命名空间（docs/lake-schema-spec.md）：claude 原生字段是冻结
 // 信封，扩展数据进带 (schema,version) 声明的口袋。双轨期 legacy 顶层字段
@@ -65,8 +66,26 @@ export function ccVersionFromSystem(system: string | AnthropicContentBlock[] | u
   return m ? m[1].replace(/\.+$/, '') : null;
 }
 
-export function proxySourceMarker(protocol: Protocol): string {
-  return protocol === 'openai' ? 'opencode-proxy' : protocol === 'responses' ? 'codex-proxy' : 'claude-proxy';
+// 框架标签（cc-session-meta.framework / 行级 source 的归属维度）。
+//
+// 判定优先级：
+//   1) **wire 自描述** —— 有 agent 会把自己的会话头随请求发出（dsh 就是：
+//      body.dsh_session_log.session）。这是最可靠的：不依赖启动参数，
+//      换设备 / 换启动方式都成立，也不需要 cpx-cli 知道具体 agent。
+//   2) **环境变量覆盖** —— CANNBOT_PROXY_AGENT_FRAMEWORK。给"不自报名"的
+//      agent 留的显式口子。
+//   3) 默认 —— anthropic 协议默认族是 claude-code。
+export function agentFrameworkLabel(body?: unknown): string {
+  if (body !== undefined && readDshSessionHeader(body)) return 'dsh';
+  const fw = process.env.CANNBOT_PROXY_AGENT_FRAMEWORK?.trim();
+  return fw ? fw : 'claude-code';
+}
+
+export function proxySourceMarker(protocol: Protocol, body?: unknown): string {
+  if (protocol === 'openai') return 'opencode-proxy';
+  if (protocol === 'responses') return 'codex-proxy';
+  const fw = agentFrameworkLabel(body);
+  return fw === 'claude-code' ? 'claude-proxy' : `${fw}-proxy`;
 }
 
 interface RequestBody {
@@ -101,6 +120,80 @@ function isTitleGenRecord(rec: ProxyRecord): boolean {
   const body = rec.request.body as RequestBody | null;
   const sysText = extractSystemText(body?.system);
   return !!sysText && sysText.includes('sentence-case title');
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// dsh(DeepSeek Harness)扩展区块
+//
+// 为什么在这里:dsh 与 claude-code 共用 Anthropic Messages 协议,而路由
+// (server.ts dispatchEmit)是**按协议**选 emitter —— 所以 dsh 的捕获也进这里。
+// 这是本仓既有的模式:cannbot 同样共用 opencode-emitter(靠 userAgent 区分)。
+//
+// 本区块只做两件事,**不碰 claude 的既有路径**(native 路径必须逐字节不变):
+//   ① 从 body.dsh_session_log 判出"这是 dsh"并取血缘
+//      —— 用于框架标签(dsh / dsh-proxy)与子代理归属
+//   ② 把 dsh 子代理落到 <父sid>/subagents/<子sid>.jsonl(与 claude 同布局)
+//
+// ⚠️ 拆分触发点 —— 满足任一条,就把本区块整体抽到 framework/dsh.ts:
+//   · 有【第 3 个】框架要进 claude-emitter(或 opencode-emitter)
+//     —— 两个是特例,三个才是模式
+//   · 本区块超过 ~200 行 —— 占比过大,emitter 不再"主要是协议转换"
+//   · 出现"改 claude 分支误伤 dsh"的 bug —— 隔离失效的实证
+//
+// 目标形态:抽 framework/ 适配层(claude.ts / dsh.ts / index.ts),emitter 只留
+// "协议 → claude 格式"的转换,由 adapter 提供 { isSubagent, parentSid,
+// subagentId, subagentName, toolAlias }。详见 README「框架扩展」。
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// dsh 把【会话头】作为私有扩展字段随每个请求发出去:
+//   body.dsh_session_log.session = { id, parentSession, origin, delegationDepth, ... }
+// 这是 dsh 官方代码(dsh-session-log-deepseek 的 wireHeader())序列化的
+// session.header —— 和它写进原生日志的是同一个对象,因此是【权威】血缘来源。
+//
+// 注意:它不是 HTTP header,而是 HTTP body 里的一个 JSON 字段;
+// dsh 的 HTTP header 里没有任何 parent 标识(实测)。
+//
+// 子会话的 sid 是它【自己】的(x-deepseek-harness-session-id),
+// 而我们要把它的记录写进 <父sid>/subagents/<子sid>.jsonl —— 这正是
+// insight 的 listSubagentSessions() 期待的布局。
+
+/** 工具名归一:insight 的 bridge-builder 只认 task/Agent;
+ *  dsh 的派发工具叫 subagent —— 在落盘时翻译,不改 insight。 */
+const DISPATCH_TOOL_ALIAS: Record<string, string> = { subagent: 'Agent' };
+
+interface DshSessionHeader {
+  id?: string;
+  parentSession?: string;
+  origin?: string;
+  delegationDepth?: number;
+  agentPreset?: string;
+}
+
+interface DshSubagentDescriptor {
+  label?: string;
+  mode?: string;
+  provider?: string;
+  agentModel?: string;
+}
+
+/** 从请求体读 dsh 的会话头(血缘权威来源);非 dsh 请求返回 null。 */
+function readDshSessionHeader(body: unknown): DshSessionHeader | null {
+  const session = (body as { dsh_session_log?: { session?: unknown } } | null)?.dsh_session_log?.session;
+  if (!session || typeof session !== 'object') return null;
+  return session as DshSessionHeader;
+}
+
+/** 从 dsh 会话日志的增量事件里取 subagent/descriptor(带 label = 子代理名)。 */
+function readDshSubagentDescriptor(body: unknown): DshSubagentDescriptor | null {
+  const events = (body as { dsh_session_log?: { events?: unknown } } | null)?.dsh_session_log?.events;
+  if (!Array.isArray(events)) return null;
+  for (const e of events) {
+    const ev = e as { type?: string; data?: unknown };
+    if (ev?.type === 'subagent/descriptor' && ev.data && typeof ev.data === 'object') {
+      return ev.data as DshSubagentDescriptor;
+    }
+  }
+  return null;
 }
 
 function isSubagentRecord(rec: ProxyRecord): boolean {
@@ -212,7 +305,48 @@ export function emit(rec: ProxyRecord): void {
   // Resolve context + target file.
   let contextKey: string;
   let targetFile: string;
-  if (!isSub) {
+  // dsh:血缘来自 body.dsh_session_log.session(权威),与 claude 的
+  // cc_is_subagent 是两个互不影响的分支。
+  const dshHeader = readDshSessionHeader(body);
+  const rawDshParentSid = dshHeader?.parentSession ?? null;
+  // parentSession 来自请求 body（不可信 wire 数据）,而它会进文件路径
+  // （<父sid>/subagents/…）—— 必须先过 isSafeSid,与 header sid / claude 的
+  // subId / dsh 的 childId 同一条纪律。非法时回落主会话分支并告警。
+  const dshParentSid = isSafeSid(rawDshParentSid) ? rawDshParentSid : null;
+  if (rawDshParentSid && !dshParentSid) {
+    console.error(`[cpx] dsh parentSession 非法,已忽略并回落主会话分支: ${JSON.stringify(rawDshParentSid).slice(0, 80)}`);
+  }
+  const isDshSub = !!dshParentSid
+    && (dshHeader?.origin === 'subagent' || (dshHeader?.delegationDepth ?? 0) > 0);
+
+  if (isDshSub) {
+    // dsh 子代理:子用自己的 sid,记录要落到【父】的 subagents 目录下,
+    // 布局与 claude 完全一致 → insight 侧零改动即可发现。
+    const childId = sid;
+    contextKey = childId;
+    targetFile = subagentFilePath(dshParentSid, childId);
+    if (!metaWritten.has(childId)) {
+      metaWritten.add(childId);
+      const desc = readDshSubagentDescriptor(body);
+      const name = desc?.label ?? null;
+      const agentType = desc?.mode ?? desc?.provider ?? null;
+      writeMeta(subagentMetaPath(dshParentSid, childId), {
+        // 注:toolUseId 需要从【父侧】的 tool_result 推导,涉及跨请求状态与
+        // 竞态回填;当前不做 —— 它只影响 dispatch 箭头的 tooltip 状态,
+        // 目录发现与泳道图不依赖它。
+        toolUseId: null,
+        name,
+        agentType,
+        x_lake: xLake('cc-subagent-meta', {
+          toolUseId: null,
+          name, agentType, subagentSessionId: childId,
+        }), x_cannbay: xLake('cc-subagent-meta', {
+          toolUseId: null,
+          name, agentType, subagentSessionId: childId,
+        }),
+      });
+    }
+  } else if (!isSub) {
     contextKey = 'main';
     targetFile = sessionFilePath(sid);
     if (!sessionMetaWritten.has(sid)) {
@@ -220,13 +354,13 @@ export function emit(rec: ProxyRecord): void {
       writeMeta(sessionMetaPath(sid), {
         x_lake: xLake('cc-session-meta', {
           producer: 'cpx',
-          framework: rec.protocol === 'openai' ? 'opencode' : 'claude-code',
+          framework: rec.protocol === 'openai' ? 'opencode' : agentFrameworkLabel(body),
           protocol: rec.protocol,
           ccVersion: ccVersionFromSystem(body.system),
           sid,
         }), x_cannbay: xLake('cc-session-meta', {
           producer: 'cpx',
-          framework: rec.protocol === 'openai' ? 'opencode' : 'claude-code',
+          framework: rec.protocol === 'openai' ? 'opencode' : agentFrameworkLabel(body),
           protocol: rec.protocol,
           ccVersion: ccVersionFromSystem(body.system),
           sid,
@@ -308,7 +442,7 @@ export function emit(rec: ProxyRecord): void {
         timestamp: toISO(rec.receivedAt),
         deduped: true,
         originalChars: injectionText!.length,
-        source: proxySourceMarker(rec.protocol),
+        source: proxySourceMarker(rec.protocol, body),
         x_lake: xLake('cc-wire-input', {
           roundIndex: roundCount.get(contextKey) ?? 0,
           kind: 'dedup-placeholder',
@@ -328,7 +462,7 @@ export function emit(rec: ProxyRecord): void {
       type: m.role === 'system' ? 'system' : 'user',
       message: { role: m.role, content: m.content ?? '' },
       timestamp: toISO(rec.receivedAt),
-      source: proxySourceMarker(rec.protocol),
+      source: proxySourceMarker(rec.protocol, body),
       x_lake: xLake('cc-wire-input', {
         roundIndex: roundCount.get(contextKey) ?? 0,
         kind: wireInputKind(m),
@@ -354,7 +488,14 @@ export function emit(rec: ProxyRecord): void {
   // it only round-trips via lake cc-db-turn export/patch).
   // x_cannbay（cc-wire-round）是以上全部信息的声明式权威源（双轨并存，读方优先），
   // 并新增 legacy 通道没有的：roundIndex / requestParams / status。
-  const contentBlocks = Array.isArray(rec.response.content) ? rec.response.content as AnthropicContentBlock[] : [];
+  const contentBlocks = (Array.isArray(rec.response.content) ? rec.response.content as AnthropicContentBlock[] : [])
+    .map((b) => {
+      // 工具名归一只对 dsh 生效:claude 路径必须逐字节不变 —— 若某个 claude
+      // 会话里有同名(subagent)的自定义/MCP 工具,无条件改名会破坏 wire 存档。
+      if (!dshHeader) return b;
+      const alias = b.type === 'tool_use' && b.name ? DISPATCH_TOOL_ALIAS[b.name] : undefined;
+      return alias ? { ...b, name: alias } : b;
+    });
   const roundIndex = roundCount.get(contextKey) ?? 0;
   roundCount.set(contextKey, roundIndex + 1);
   appendClaudeLine(targetFile, {
@@ -373,7 +514,7 @@ export function emit(rec: ProxyRecord): void {
     duration_ms: rec.latencyMs,
     stopReason: rec.response.stop_reason ?? undefined,
     ttftMs: rec.ttftMs ?? undefined,
-    source: proxySourceMarker(rec.protocol),
+    source: proxySourceMarker(rec.protocol, body),
     x_lake: xLake('cc-wire-round', {
       roundIndex,
       protocol: rec.protocol,

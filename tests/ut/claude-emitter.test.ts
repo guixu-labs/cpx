@@ -15,7 +15,7 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { emit, ccVersionFromSystem } from '../../src/claude-emitter.ts';
+import { emit, ccVersionFromSystem, proxySourceMarker, agentFrameworkLabel } from '../../src/claude-emitter.ts';
 import { sessionFilePath } from '../../src/writer.ts';
 
 const SID = 'cpx-claude-fmt';
@@ -467,5 +467,41 @@ describe('claude-emitter: x_cannbay 声明式扩展（docs/cannbay-schema-spec.m
       expect(typeof r.x_cannbay.data.roundIndex).toBe('number');
       expect(KINDS).toContain(r.x_cannbay.data.kind);
     }
+  });
+});
+
+describe('proxySourceMarker / agentFrameworkLabel（框架标签覆盖）', () => {
+  const saved = process.env.CANNBOT_PROXY_AGENT_FRAMEWORK;
+  afterAll(() => {
+    if (saved === undefined) delete process.env.CANNBOT_PROXY_AGENT_FRAMEWORK;
+    else process.env.CANNBOT_PROXY_AGENT_FRAMEWORK = saved;
+  });
+
+  it('默认（未设覆盖）：anthropic → claude-proxy，openai/responses 按协议不变', () => {
+    delete process.env.CANNBOT_PROXY_AGENT_FRAMEWORK;
+    expect(agentFrameworkLabel()).toBe('claude-code');
+    expect(proxySourceMarker('anthropic')).toBe('claude-proxy');
+    expect(proxySourceMarker('openai')).toBe('opencode-proxy');
+    expect(proxySourceMarker('responses')).toBe('codex-proxy');
+  });
+
+  it('wire 自描述优先：body 里有 dsh_session_log → dsh-proxy（无需 env）', () => {
+    delete process.env.CANNBOT_PROXY_AGENT_FRAMEWORK;
+    const dshBody = { dsh_session_log: { session: { id: 'session-x', origin: 'subagent', parentSession: 'session-p' } } };
+    expect(agentFrameworkLabel(dshBody)).toBe('dsh');
+    expect(proxySourceMarker('anthropic', dshBody)).toBe('dsh-proxy');
+    // 非 dsh 的 body 不受影响
+    expect(proxySourceMarker('anthropic', { system: 'You are Claude Code' })).toBe('claude-proxy');
+    // 协议差异仍优先于框架标签
+    expect(proxySourceMarker('responses', dshBody)).toBe('codex-proxy');
+  });
+
+  it('dsh profile（CANNBOT_PROXY_AGENT_FRAMEWORK=dsh）：anthropic → dsh-proxy', () => {
+    process.env.CANNBOT_PROXY_AGENT_FRAMEWORK = 'dsh';
+    expect(agentFrameworkLabel()).toBe('dsh');
+    expect(proxySourceMarker('anthropic')).toBe('dsh-proxy');
+    // 协议差异优先于框架标签：openai/responses 的 marker 不受影响
+    expect(proxySourceMarker('openai')).toBe('opencode-proxy');
+    expect(proxySourceMarker('responses')).toBe('codex-proxy');
   });
 });

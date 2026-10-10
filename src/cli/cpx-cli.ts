@@ -74,8 +74,8 @@ const INSIGHT_BASE = resolveInsightBase();
 const USAGE = `cpx ${VERSION_DISPLAY} — agent↔模型明文捕获代理编排器
 
 用法：
-  cpx <agent-cmd> [args...]              例: cpx claude / cpx codex / cpx cannbot
-  cpx --agent <claude|opencode|cannbot|codex|openai|generic> -- <cmd> [args]
+  cpx <agent-cmd> [args...]              例: cpx claude / cpx codex / cpx cannbot / cpx dsh
+  cpx --agent <claude|opencode|cannbot|codex|dsh|openai|generic> -- <cmd> [args]
   cpx list                              列出全部捕获会话文件（按时间降序，只读）
   cpx status [--kill [--all]]            查看状态；--kill 清理孤儿 proxy（父进程已死的泄漏实例），--all 连活跃会话一起清
   cpx config [dedup on|off]              查看/配置注入压缩（默认 off，热生效，只压缩捕获记录不改转发）
@@ -92,7 +92,7 @@ agent 退出后自动压缩归档；insight 在运行则自动导入并开浏览
 \`~/.cannbot-insight/proxy/\` 目录）。安装：./proxy/install.sh（独立）或根
 目录 ./start.sh（一体化，内部调用前者）。`;
 
-type AgentProfile = 'claude' | 'opencode' | 'cannbot' | 'codex' | 'openai' | 'generic';
+type AgentProfile = 'claude' | 'opencode' | 'cannbot' | 'codex' | 'dsh' | 'openai' | 'generic';
 
 function log(msg: string): void { console.error(`[cpx-cli] ${msg}`); }
 
@@ -499,6 +499,12 @@ function buildLaunch(profile: AgentProfile, proxyPort: number, claude: ClaudeSet
       // ChatGPT 登录用户：仅覆盖 base_url，不碰 auth
       return { env: {}, args: ['-c', `openai_base_url="${proxyUrl}/v1"`, ...agentArgs] };
     }
+    case 'dsh':
+      // dsh（DeepSeek Harness）默认模型出口就是 Anthropic Messages 协议，
+      // 根地址由显式 baseURL 或 $DEEPSEEK_BASE_URL 决定（显式优先）。这里用
+      // 环境变量把根地址指向 proxy → dsh 发 POST /v1/messages，proxy 按
+      // anthropic 协议捕获。注意：profile 若显式配置 baseURL 会盖过本覆盖。
+      return { env: { DEEPSEEK_BASE_URL: proxyUrl }, args: agentArgs };
     case 'openai':
     case 'generic':
       return { env: { OPENAI_BASE_URL: proxyUrl }, args: agentArgs };
@@ -799,6 +805,9 @@ async function main(): Promise<void> {
   // opencode's built-in provider baseURLs live in opencode internals, not the
   // user's opencode.json. Override via CANNBOT_PROXY_OPENAI_UPSTREAM if wrong.
   const openaiUpstream = process.env.CANNBOT_PROXY_OPENAI_UPSTREAM ?? 'https://api.openai.com';
+  // dsh（DeepSeek Harness）的模型出口是 Anthropic Messages 协议，官方根地址为
+  // api.deepseek.com/anthropic；用户已设 $DEEPSEEK_BASE_URL 时它才是真实上游。
+  const deepseekUpstream = process.env.DEEPSEEK_BASE_URL?.trim() || 'https://api.deepseek.com/anthropic';
 
   // Validate opencode capture preconditions BEFORE starting the proxy, so a
   // missing provider config exits cleanly instead of starting an orphan proxy
@@ -849,11 +858,15 @@ async function main(): Promise<void> {
     }
   }
 
-  const sessionProxy = await startSessionProxy(sid, claude.upstream, openaiUpstream, providerUpstreams);
+  // dsh 与 claude 同为 anthropic 协议：只需换上游。框架标签由 emitter 从
+  // wire 自描述判定（body.dsh_session_log），cpx-cli 不必知道具体 agent。
+  const anthropicUpstream = profile === 'dsh' ? deepseekUpstream : claude.upstream;
+  const sessionProxy = await startSessionProxy(sid, anthropicUpstream, openaiUpstream, providerUpstreams);
   const jsonlPath = sessionFilePath(sid);
   const { env, args } = buildLaunch(profile, sessionProxy.port, claude, agentArgs, agentCmd);
 
-  const displayUpstream = profile === 'opencode' || profile === 'cannbot' || profile === 'openai' || profile === 'generic' || profile === 'codex'
+  const displayUpstream = profile === 'dsh' ? deepseekUpstream
+    : profile === 'opencode' || profile === 'cannbot' || profile === 'openai' || profile === 'generic' || profile === 'codex'
     ? (profile === 'cannbot' ? (providerUpstreams['cannbot'] ?? openaiUpstream) : openaiUpstream)
     : claude.upstream;
 
@@ -915,6 +928,10 @@ async function main(): Promise<void> {
 
   log(`session: ${sid}`);
   log(`profile: ${profile}  upstream: ${displayUpstream}`);
+  if (profile === 'dsh') {
+    log(`  dsh baseURL → proxy via $DEEPSEEK_BASE_URL  (真实上游 ${deepseekUpstream})`);
+    log('  note: profile 的 cordis.patch.yml 若显式写了 llm-deepseek baseURL，会盖过该覆盖');
+  }
   if (profile === 'opencode' || profile === 'cannbot') {
     const ids = opencodeProviderIds;
     const src = parseOpencodeProvider(agentArgs) ? '-m'
