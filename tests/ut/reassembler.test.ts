@@ -7,7 +7,7 @@
 // See LICENSE in the root of the software repository for the full text of the License.
 
 import { describe, it, expect } from 'vitest';
-import { createReassembler, reassembleOpenAIJson } from '../../src/stream-reassembler.ts';
+import { createReassembler, reassembleOpenAIJson, reassembleResponsesJson } from '../../src/stream-reassembler.ts';
 
 function sse(events: object[]): string {
   return events.map(e => `data: ${JSON.stringify(e)}\n\n`).join('') + 'data: [DONE]\n\n';
@@ -256,5 +256,108 @@ describe('stream-reassembler: ttft (firstTokenAt)', () => {
     const r2 = createReassembler('openai');
     r2.feed(sse([{ choices: [{ delta: {}, finish_reason: 'stop' }] }]));
     expect(r2.result().firstTokenAt).toBeNull();
+  });
+});
+
+// Responses API（codex）：SSE 事件流 + 非流式 JSON 两形态。事件形状取自
+// 真机 codex 网关捕获（response.output_item.added / output_text.delta /
+// function_call_arguments.delta / reasoning_summary_text.delta /
+// output_item.done / response.completed）。
+describe('stream-reassembler: Responses API（codex）', () => {
+  it('reasoning + message + function_call → thinking 置首、tool_use 参数解析 + usage 全通道', () => {
+    const r = createReassembler('responses');
+    r.feed(sse([
+      { type: 'response.created', response: { model: 'deepseek-v4-pro' } },
+      { type: 'response.output_item.added', output_index: 0, item: { type: 'reasoning' } },
+      { type: 'response.reasoning_summary_text.delta', output_index: 0, summary_index: 0, delta: '先分析' },
+      { type: 'response.reasoning_summary_text.delta', output_index: 0, summary_index: 0, delta: '任务' },
+      { type: 'response.output_item.added', output_index: 1, item: { type: 'message', role: 'assistant' } },
+      { type: 'response.output_text.delta', output_index: 1, delta: '派发子代理' },
+      { type: 'response.output_item.added', output_index: 2, item: { type: 'function_call', name: 'spawn_agent', call_id: 'call-s1' } },
+      { type: 'response.function_call_arguments.delta', output_index: 2, delta: '{"message":"任务文本"}' },
+      { type: 'response.completed', response: { model: 'deepseek-v4-pro', status: 'completed', usage: { input_tokens: 100, output_tokens: 50, input_tokens_details: { cached_tokens: 20 }, output_tokens_details: { reasoning_tokens: 12 } } } },
+    ]));
+    const res = r.result();
+    expect(res.content.map(c => c.type)).toEqual(['thinking', 'text', 'tool_use']);
+    expect(res.content[0]).toEqual({ type: 'thinking', thinking: '先分析任务' });
+    expect(res.content[1]).toEqual({ type: 'text', text: '派发子代理' });
+    expect(res.content[2]).toEqual({ type: 'tool_use', id: 'call-s1', name: 'spawn_agent', input: { message: '任务文本' } });
+    expect(res.model).toBe('deepseek-v4-pro');
+    expect(res.stop_reason).toBe('completed');
+    expect(res.usage).toEqual({ input_tokens: 100, output_tokens: 50, cache_read_input_tokens: 20, reasoning_tokens: 12 });
+  });
+
+  it('reasoning 的 output_item.done summary 全文覆盖 delta 累积（done 是权威形态）', () => {
+    const r = createReassembler('responses');
+    r.feed(sse([
+      { type: 'response.output_item.added', output_index: 0, item: { type: 'reasoning' } },
+      { type: 'response.reasoning_summary_text.delta', output_index: 0, delta: '部分思考' },
+      { type: 'response.output_item.done', output_index: 0, item: { type: 'reasoning', summary: [{ type: 'summary_text', text: '权威全文' }] } },
+      { type: 'response.completed', response: { status: 'completed' } },
+    ]));
+    const res = r.result();
+    expect(res.content).toEqual([{ type: 'thinking', thinking: '权威全文' }]);
+  });
+
+  it('网关变体：reasoning_text.delta/done + output_item.done 的 content[]（volcano/deepseek 实测形状）', () => {
+    const r = createReassembler('responses');
+    r.feed(sse([
+      { type: 'response.output_item.added', output_index: 0, item: { id: 'rsn-1', type: 'reasoning' } },
+      { type: 'response.reasoning_text.delta', output_index: 0, content_index: 0, delta: '网关思考' },
+      { type: 'response.reasoning_text.delta', output_index: 0, content_index: 0, delta: '片段' },
+      { type: 'response.reasoning_text.done', output_index: 0, content_index: 0, text: '网关思考片段（权威）' },
+      { type: 'response.output_item.done', output_index: 0, item: { id: 'rsn-1', type: 'reasoning', content: [{ type: 'reasoning_text', text: '网关思考片段（权威）' }] } },
+      { type: 'response.completed', response: { status: 'completed' } },
+    ]));
+    expect(r.result().content).toEqual([{ type: 'thinking', thinking: '网关思考片段（权威）' }]);
+  });
+
+  it('ttft：reasoning_summary_text.delta 也触发 firstTokenAt（思考先于正文）', () => {
+    const r = createReassembler('responses');
+    r.feed(sse([
+      { type: 'response.output_item.added', output_index: 0, item: { type: 'reasoning' } },
+      { type: 'response.reasoning_summary_text.delta', output_index: 0, delta: '思' },
+      { type: 'response.completed', response: { status: 'completed' } },
+    ]));
+    expect(r.result().firstTokenAt).toBeTypeOf('number');
+  });
+});
+
+describe('reassembleResponsesJson（非流式）: output[] 三类 item + usage', () => {
+  it('message/function_call/reasoning → text/tool_use/thinking + reasoning_tokens', () => {
+    const res = reassembleResponsesJson({
+      model: 'deepseek-v4-pro',
+      status: 'completed',
+      output: [
+        { type: 'reasoning', summary: [{ type: 'summary_text', text: '思考过程' }] },
+        { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: '正文回答' }] },
+        { type: 'function_call', name: 'exec_command', call_id: 'call-e1', arguments: '{"command":"ls"}' },
+      ],
+      usage: { input_tokens: 10, output_tokens: 5, input_tokens_details: { cached_tokens: 4 }, output_tokens_details: { reasoning_tokens: 3 } },
+    });
+    expect(res.content.map(c => c.type)).toEqual(['thinking', 'text', 'tool_use']);
+    expect(res.content[0]).toEqual({ type: 'thinking', thinking: '思考过程' });
+    expect(res.content[2]).toEqual({ type: 'tool_use', id: 'call-e1', name: 'exec_command', input: { command: 'ls' } });
+    expect(res.stop_reason).toBe('completed');
+    expect(res.usage).toEqual({ input_tokens: 10, output_tokens: 5, cache_read_input_tokens: 4, reasoning_tokens: 3 });
+  });
+
+  it('网关变体：reasoning 的 content[]（reasoning_text）同样成 thinking 块', () => {
+    const res = reassembleResponsesJson({
+      model: 'deepseek-v4-pro',
+      status: 'completed',
+      output: [
+        { type: 'reasoning', content: [{ type: 'reasoning_text', text: '网关思考全文' }] },
+        { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: '答' }] },
+      ],
+    });
+    expect(res.content).toEqual([{ type: 'thinking', thinking: '网关思考全文' }, { type: 'text', text: '答' }]);
+  });
+
+  it('空 output / 缺 usage → 空内容 + null usage（不抛）', () => {
+    const res = reassembleResponsesJson({ model: 'm', status: 'failed', output: [] });
+    expect(res.content).toEqual([]);
+    expect(res.usage).toBeNull();
+    expect(res.stop_reason).toBe('failed');
   });
 });

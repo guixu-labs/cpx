@@ -8,10 +8,12 @@
 
 import http from 'node:http';
 import fs from 'node:fs';
+import path from 'node:path';
 import { createRequire } from 'node:module';
 import { resolveSession, protocolFromPath } from './session-resolver';
 import { requestBodyForCapture } from './request-body-decoder';
-import { createReassembler, reassembleAnthropicJson, reassembleOpenAIJson, type ReassembledResponse } from './stream-reassembler';
+import { createReassembler, reassembleAnthropicJson, reassembleOpenAIJson, reassembleResponsesJson, type ReassembledResponse } from './stream-reassembler';
+import { OrderedDispatcher } from './ordered-dispatch';
 import { ensureProxyDir, sessionFilePath, appendSid } from './writer';
 import { emit as claudeEmit } from './claude-emitter';
 import { emit as opencodeEmit } from './opencode-emitter';
@@ -39,6 +41,11 @@ function dispatchEmit(rec: ProxyRecord): void {
   else opencodeEmit(rec);
 }
 
+// 捕获记录按「请求到达序」落盘而非响应完成序（竞态与因果论证见
+// ordered-dispatch.ts 头注：子代理首轮可能先于派发轮完成）。
+const orderedDispatch = new OrderedDispatcher(dispatchEmit);
+let arrivalCounter = 0;
+
 const PORT = parseInt(process.env.CANNBOT_PROXY_PORT ?? '0', 10) || 0;
 const SESSION_ID = process.env.CANNBOT_PROXY_SESSION_ID ?? '';
 const ANTHROPIC_UPSTREAM = process.env.CANNBOT_PROXY_ANTHROPIC_UPSTREAM ?? 'https://api.anthropic.com';
@@ -59,13 +66,65 @@ const STRIP_REQ_HEADERS = new Set([
 
 ensureProxyDir();
 
-// 用户的 HTTP 代理（clash/v2ray 等）—— Node 原生 fetch 不自动读 HTTPS_PROXY，
-// 需显式配置 undici ProxyAgent。undici 是 Node 内置 CJS 模块，ESM 里用
-// createRequire 访问（import 'undici' 找不到 node_modules 里的包）。
-const upstreamProxy = process.env.HTTPS_PROXY || process.env.HTTP_PROXY || process.env.ALL_PROXY;
-if (upstreamProxy) {
-  const { ProxyAgent, setGlobalDispatcher } = createRequire(import.meta.url)('undici');
-  setGlobalDispatcher(new ProxyAgent(upstreamProxy));
+// 出口网络策略（proxy → 真实 upstream）：按请求遵循环境代理变量
+// （HTTP_PROXY/HTTPS_PROXY/NO_PROXY，ALL_PROXY 作 curl 风格兜底），无配置则
+// 直连。EnvHttpProxyAgent 一个机制覆盖全部网络场景：shell 导出的全局梯子、
+// 脚本起终端的窗口/项目级梯子（env 继承）、TUN 模式（无 env，OS 透明路由）、
+// 以及无代理直连 provider。agent→proxy 的本地跳不在此层——那是 cpx-cli
+// 注入子进程的 NO_PROXY 的职责，两跳彻底解耦。
+// undici 是 package.json 的显式 npm 依赖（^6.28.1——EnvHttpProxyAgent 需
+// undici ≥6），此处经 createRequire 按需加载使用。
+const envHttpProxy = process.env.HTTPS_PROXY || process.env.HTTP_PROXY || process.env.ALL_PROXY
+  || process.env.https_proxy || process.env.http_proxy || process.env.all_proxy
+  || process.env.NO_PROXY || process.env.no_proxy;
+if (envHttpProxy) {
+  const { EnvHttpProxyAgent, setGlobalDispatcher } = createRequire(import.meta.url)('undici');
+  setGlobalDispatcher(new EnvHttpProxyAgent({
+    httpProxy: process.env.HTTP_PROXY || process.env.http_proxy || process.env.ALL_PROXY || process.env.all_proxy || undefined,
+    httpsProxy: process.env.HTTPS_PROXY || process.env.https_proxy || process.env.ALL_PROXY || process.env.all_proxy || undefined,
+    noProxy: process.env.NO_PROXY || process.env.no_proxy || undefined,
+  }));
+}
+
+// 原始 wire 落盘（协议观测/排障专用，CANNBOT_PROXY_DUMP_DIR=/path 开启）：
+// 每个被代理的调用写一对 <seq>-request.json + <seq>-response.txt。请求头里
+// 的敏感项（authorization/cookie/api-key/token）打码，body 逐字保留（解码后
+// 的可读形态）。与捕获管线（PROXY_DIR）完全分离——这是回答 wire 格式问题的
+// 调试工具（如 codex 子代理路由信号验证），不参与任何 emitter 消费。
+const DUMP_DIR = process.env.CANNBOT_PROXY_DUMP_DIR ?? '';
+let dumpSeq = 0;
+// 请求体与 SSE 响应都可能很大（真机单会话 386 请求 / 18M tokens）：观测
+// 目标是事件形状而非全量内容，超限截断保内存（按字符计，中文内容字节数
+// 约为字符数 3 倍，量级足够）。
+const DUMP_BODY_CAP = 8 * 1024 * 1024;
+
+function capDumpText(text: string): string {
+  return text.length > DUMP_BODY_CAP
+    ? `${text.slice(0, DUMP_BODY_CAP)}\n…[dump truncated at ${DUMP_BODY_CAP} chars]`
+    : text;
+}
+
+function dumpWireRequest(req: http.IncomingMessage, decodedBody: string): string | null {
+  if (!DUMP_DIR) return null;
+  const seq = String(++dumpSeq).padStart(4, '0');
+  try {
+    fs.mkdirSync(DUMP_DIR, { recursive: true });
+    const headers: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(req.headers)) {
+      headers[k] = /authorization|cookie|api-key|token|session|key/i.test(k) ? '***' : v;
+    }
+    fs.writeFileSync(path.join(DUMP_DIR, `${seq}-request.json`), JSON.stringify({
+      seq, method: req.method, url: req.url, headers, body: capDumpText(decodedBody),
+    }, null, 2));
+  } catch { /* best-effort：dump 失败绝不影响代理 */ }
+  return seq;
+}
+
+function dumpWireResponse(seq: string | null, status: number, contentType: string, text: string): void {
+  if (!seq || !DUMP_DIR) return;
+  try {
+    fs.writeFileSync(path.join(DUMP_DIR, `${seq}-response.txt`), `HTTP ${status}  content-type: ${contentType}\n\n${capDumpText(text)}`);
+  } catch { /* best-effort */ }
 }
 
 function upstreamBase(protocol: Protocol): string {
@@ -140,8 +199,11 @@ async function handleProxy(req: http.IncomingMessage, res: http.ServerResponse, 
   forwardHeaders['content-type'] = req.headers['content-type'] ?? 'application/json';
 
   const receivedAt = Date.now();
+  // 到达序：emit 顺序的因果基准（在 fetch 之前分配，502/异常路径也能墓碑推进）
+  const arrivalSeq = ++arrivalCounter;
   const isSseRequested = parsedBody != null &&
     (parsedBody as { stream?: unknown }).stream === true;
+  const dumpId = dumpWireRequest(req, bodyForParsing.toString('utf-8'));
 
   let upstreamRes: Response;
   try {
@@ -151,6 +213,7 @@ async function handleProxy(req: http.IncomingMessage, res: http.ServerResponse, 
       body: body.length > 0 ? new Uint8Array(body) : undefined,
     });
   } catch (err) {
+    orderedDispatch.submit(arrivalSeq, null);
     res.writeHead(502, { 'content-type': 'application/json' });
     res.end(JSON.stringify({ error: 'upstream unreachable', detail: String(err) }));
     return;
@@ -165,9 +228,9 @@ async function handleProxy(req: http.IncomingMessage, res: http.ServerResponse, 
   }
 
   if (isSseResponse || isSseRequested) {
-    await handleStream(req, res, upstreamRes, sid, protocol, parsedBody, receivedAt);
+    await handleStream(req, res, upstreamRes, sid, protocol, parsedBody, receivedAt, arrivalSeq, dumpId, respContentType);
   } else {
-    await handleNonStream(res, upstreamRes, sid, protocol, parsedBody, receivedAt);
+    await handleNonStream(res, upstreamRes, sid, protocol, parsedBody, receivedAt, arrivalSeq, dumpId, respContentType);
   }
 }
 
@@ -185,25 +248,32 @@ async function handleStream(
   sid: string,
   protocol: Protocol,
   requestBody: unknown,
-  receivedAt: number
+  receivedAt: number,
+  arrivalSeq: number,
+  dumpId: string | null,
+  respContentType: string
 ): Promise<void> {
   res.writeHead(upstreamRes.status, { 'content-type': res.getHeader('content-type') ?? 'text/event-stream' });
 
   const reassembler = createReassembler(protocol);
   const reader = upstreamRes.body?.getReader();
   if (!reader) {
+    orderedDispatch.submit(arrivalSeq, null);
     res.end();
     return;
   }
 
+  let dumpedText = '';
   try {
     const decoder = new TextDecoder();
     for (;;) {
       const { done, value } = await reader.read();
       if (done) break;
       if (value) {
-        reassembler.feed(decoder.decode(value, { stream: true }));
+        const chunk = decoder.decode(value, { stream: true });
+        reassembler.feed(chunk);
         res.write(value);
+        if (dumpId && dumpedText.length < DUMP_BODY_CAP) dumpedText += chunk;
       }
     }
     // flush trailing multibyte bytes
@@ -211,6 +281,7 @@ async function handleStream(
   } catch {
     // client disconnect — still record what we captured
   }
+  dumpWireResponse(dumpId, upstreamRes.status, respContentType, dumpedText);
 
   // Persist the record BEFORE res.end() so the client receiving the response
   // (and possibly exiting immediately, causing cpx-cli to SIGTERM this proxy)
@@ -221,9 +292,13 @@ async function handleStream(
   const completedAt = Date.now();
   const reassembled = reassembler.result();
   const ttftMs = reassembled.firstTokenAt != null ? reassembled.firstTokenAt - receivedAt : null;
+  // submit 在 res.end() 前：到达序缓冲保证后继记录先于此响应结束前不会
+  // 落盘（见 ordered-dispatch.ts）。buildRecord 抛错时提交 null 推进序列，
+  // 绝不让后续记录滞留内存。emit 自身的落盘错误在 flush 内部兜底。
   try {
-    dispatchEmit(buildRecord(sid, protocol, requestBody, upstreamRes.status, reassembled, receivedAt, completedAt, req, ttftMs));
+    orderedDispatch.submit(arrivalSeq, buildRecord(sid, protocol, requestBody, upstreamRes.status, reassembled, receivedAt, completedAt, req, ttftMs));
   } catch (e) {
+    orderedDispatch.submit(arrivalSeq, null);
     console.error('[proxy] emit failed (capture may be incomplete):', e instanceof Error ? e.message : e);
   }
   res.end();
@@ -235,23 +310,52 @@ async function handleNonStream(
   sid: string,
   protocol: Protocol,
   requestBody: unknown,
-  receivedAt: number
+  receivedAt: number,
+  arrivalSeq: number,
+  dumpId: string | null,
+  respContentType: string
 ): Promise<void> {
-  const text = await upstreamRes.text();
+  // Body read failed mid-stream（上游连接中断 / body 超时 / 解码错误）：
+  // 墓碑推进到达序后照常回错——绝不让单个失败把 dispatcher 卡死在这个
+  // seq 上（所有协议共用一个 dispatcher，卡死 = 之后全部记录只进内存缓
+  // 冲、永不落盘，捕获侧静默全丢）。master 上此路径是直调 dispatchEmit
+  // 只丢自己一条；接线 ordered-dispatch 后必须有这条兜底。
+  let text: string;
+  try {
+    text = await upstreamRes.text();
+  } catch (e) {
+    dumpWireResponse(dumpId, upstreamRes.status, respContentType, '');
+    orderedDispatch.submit(arrivalSeq, null);
+    console.error('[proxy] nonstream body read failed (record dropped):', e instanceof Error ? e.message : e);
+    if (!res.headersSent) {
+      res.writeHead(502, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ error: 'upstream body read failed' }));
+    } else {
+      res.end();
+    }
+    return;
+  }
+  dumpWireResponse(dumpId, upstreamRes.status, respContentType, text);
 
   let reassembled: ReassembledResponse;
   try {
     const json = JSON.parse(text);
     reassembled = protocol === 'anthropic'
       ? reassembleAnthropicJson(json)
-      : reassembleOpenAIJson(json);
+      : protocol === 'responses'
+        ? reassembleResponsesJson(json)
+        : reassembleOpenAIJson(json);
   } catch {
     reassembled = { model: null, stop_reason: null, content: [], usage: null };
   }
 
   // Persist before sending the response to the client (same race fix as handleStream).
   const completedAt = Date.now();
-  dispatchEmit(buildRecord(sid, protocol, requestBody, upstreamRes.status, reassembled, receivedAt, completedAt, null, null));
+  let rec: ProxyRecord | null = null;
+  try {
+    rec = buildRecord(sid, protocol, requestBody, upstreamRes.status, reassembled, receivedAt, completedAt, null, null);
+  } catch { /* abandoned — submit(null) still advances the sequence */ }
+  orderedDispatch.submit(arrivalSeq, rec);
 
   res.writeHead(upstreamRes.status, { 'content-type': upstreamRes.headers.get('content-type') ?? 'application/json' });
   res.end(text);
@@ -308,7 +412,12 @@ const server = http.createServer(async (req, res) => {
     res.end(JSON.stringify({ ok: true, port: server.address() }));
     return;
   }
-  if (req.method === 'POST' && (url.includes('/v1/') || url.includes('/chat/completions') || url.includes('/messages'))) {
+  // 路由门含 /responses 后缀：provider 隧道是路径保真的，根路径 base_url
+  // （无 /v1 前缀）的 responses provider 请求形如 /<providerId>/responses，
+  // includes('/v1/') 覆盖不到就会 404——注入隧道反而打断用户请求，违背
+  // 「降级直连而非坏路由」的自身契约（session-resolver.protocolFromPath
+  // 同步识别该形态）。
+  if (req.method === 'POST' && (url.includes('/v1/') || url.includes('/chat/completions') || url.includes('/messages') || /\/responses\/?$/.test(url))) {
     try {
       const body = await readBody(req);
       await handleProxy(req, res, body);

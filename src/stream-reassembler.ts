@@ -358,6 +358,26 @@ class ResponsesApiReassembler implements Reassembler {
         if (item) item.argsPartial = (item.argsPartial ?? '') + (e.delta as string);
         break;
       }
+      case 'response.reasoning_summary_text.delta':
+      case 'response.reasoning_text.delta': {
+        // 思考文本增量的两种命名：OpenAI 规范走 summary 通道
+        // （reasoning_summary_text.delta），部分网关直出思考原文
+        // （reasoning_text.delta，volcano/deepseek 实测）。加密形态走
+        // reasoning.encrypted_content（字节串），不在此累积——捕获目标是
+        // 可读思考通道。
+        if (this.firstTokenAt === null) this.firstTokenAt = Date.now();
+        const idx = e.output_index as number;
+        const item = this.items.get(idx);
+        if (item) item.text = (item.text ?? '') + (e.delta as string);
+        break;
+      }
+      case 'response.reasoning_text.done': {
+        // 网关形态的权威全文（与 output_item.done 的 content 数组等价）
+        const idx = e.output_index as number;
+        const item = this.items.get(idx);
+        if (item && typeof e.text === 'string' && e.text) item.text = e.text;
+        break;
+      }
       case 'response.output_item.done': {
         const idx = e.output_index as number;
         const item = e.item as Record<string, unknown> | undefined;
@@ -375,6 +395,20 @@ class ResponsesApiReassembler implements Reassembler {
               try { state.input = JSON.parse(item.arguments); } catch { state.input = { _raw: item.arguments }; }
             }
           }
+          if (item.type === 'reasoning') {
+            // done 事件的权威全文，两种字段形态都认：OpenAI 规范 summary[]
+            // （summary_text）与网关 content[]（reasoning_text）。非空时覆盖
+            // delta 累积值。
+            const rItem = item as { content?: Array<Record<string, unknown>>; summary?: Array<Record<string, unknown>> };
+            let full = '';
+            if (Array.isArray(rItem.summary)) {
+              full = rItem.summary.map((s) => (typeof s.text === 'string' ? s.text : '')).join('');
+            }
+            if (!full && Array.isArray(rItem.content)) {
+              full = rItem.content.map((s) => (typeof s.text === 'string' ? s.text : '')).join('');
+            }
+            if (full) state.text = full;
+          }
         }
         break;
       }
@@ -388,6 +422,8 @@ class ResponsesApiReassembler implements Reassembler {
             input_tokens: u.input_tokens as number | undefined,
             output_tokens: u.output_tokens as number | undefined,
             cache_read_input_tokens: (u as { input_tokens_details?: { cached_tokens?: number } }).input_tokens_details?.cached_tokens,
+            // Responses API 的思考计费通道：usage.output_tokens_details.reasoning_tokens
+            reasoning_tokens: (u as { output_tokens_details?: { reasoning_tokens?: number } }).output_tokens_details?.reasoning_tokens,
           };
         }
         break;
@@ -401,8 +437,18 @@ class ResponsesApiReassembler implements Reassembler {
     for (const [, item] of sorted) {
       if (item.type === 'message') {
         if (item.text) content.push({ type: 'text', text: item.text });
+      } else if (item.type === 'reasoning') {
+        // 思考块（reasoning summary）：置首语义由 output_index 顺序天然保证
+        //（reasoning item 在流里先于 message 产出）
+        if (item.text) content.push({ type: 'thinking', thinking: item.text });
       } else if (item.type === 'function_call') {
-        content.push({ type: 'tool_use', id: item.id ?? '', name: item.name ?? '', input: item.input ?? {} });
+        // argsPartial 兜底：流中断（无 output_item.done）时 args 已累积但
+        // input 未解析——尽力恢复，与 OpenAI 重组器的 result 时解析对齐
+        let input = item.input;
+        if (!input && item.argsPartial) {
+          try { input = JSON.parse(item.argsPartial); } catch { input = { _raw: item.argsPartial }; }
+        }
+        content.push({ type: 'tool_use', id: item.id ?? '', name: item.name ?? '', input: input ?? {} });
       }
     }
     return { model: this.model, stop_reason: this.stopReason, content, usage: this.usage, firstTokenAt: this.firstTokenAt };
@@ -455,6 +501,55 @@ export function reassembleOpenAIJson(json: Record<string, unknown>): Reassembled
   return {
     model: (json.model as string) ?? null,
     stop_reason: (choice?.finish_reason as string) ?? null,
+    content,
+    usage,
+  };
+}
+
+// Responses API 的非流式 JSON 形态（codex 默认走流式，此路径兜底）：顶层
+// output[] 数组承载 items，与 SSE 的事件序列同构——message（content[] 里
+// type=output_text）、function_call（call_id/name/arguments 字符串）、
+// reasoning（summary[] 里 type=summary_text）。usage 形状与流式
+// response.completed 相同。
+export function reassembleResponsesJson(json: Record<string, unknown>): ReassembledResponse {
+  const output = Array.isArray(json.output) ? json.output as Array<Record<string, unknown>> : [];
+  const content: AnthropicContentBlock[] = [];
+  for (const item of output) {
+    if (item.type === 'message' && Array.isArray(item.content)) {
+      for (const b of item.content as Array<Record<string, unknown>>) {
+        if (b.type === 'output_text' && typeof b.text === 'string' && b.text) {
+          content.push({ type: 'text', text: b.text });
+        }
+      }
+    } else if (item.type === 'reasoning') {
+      // 两种字段形态：summary[]（OpenAI 规范）/ content[]（网关实测）
+      const rItem = item as { content?: Array<Record<string, unknown>>; summary?: Array<Record<string, unknown>> };
+      let text = '';
+      if (Array.isArray(rItem.summary)) {
+        text = rItem.summary.map((s) => (typeof s.text === 'string' ? s.text : '')).join('');
+      }
+      if (!text && Array.isArray(rItem.content)) {
+        text = rItem.content.map((s) => (typeof s.text === 'string' ? s.text : '')).join('');
+      }
+      if (text) content.push({ type: 'thinking', thinking: text });
+    } else if (item.type === 'function_call') {
+      let input: Record<string, unknown> = {};
+      if (typeof item.arguments === 'string') {
+        try { input = JSON.parse(item.arguments); } catch { input = { _raw: item.arguments }; }
+      }
+      content.push({ type: 'tool_use', id: (item.call_id as string) ?? '', name: (item.name as string) ?? '', input });
+    }
+  }
+  const u = json.usage as Record<string, unknown> | undefined;
+  const usage = u ? {
+    input_tokens: u.input_tokens as number | undefined,
+    output_tokens: u.output_tokens as number | undefined,
+    cache_read_input_tokens: (u.input_tokens_details as { cached_tokens?: number } | undefined)?.cached_tokens,
+    reasoning_tokens: (u.output_tokens_details as { reasoning_tokens?: number } | undefined)?.reasoning_tokens,
+  } : null;
+  return {
+    model: (json.model as string) ?? null,
+    stop_reason: (json.status as string) ?? null,
     content,
     usage,
   };

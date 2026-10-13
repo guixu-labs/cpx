@@ -5,11 +5,26 @@
 ## [Unreleased]
 
 ### Added
-- 【dsh 子代理建链：从 wire 取亲子血缘】dsh 把会话头作为**私有扩展字段**随每个请求发出（`body.dsh_session_log.session` = `{ id, parentSession, origin, delegationDepth }`），这是 dsh 官方代码（`dsh-session-log-deepseek` 的 `wireHeader()`）序列化的 `session.header`，与它写进原生日志的是同一对象（实测逐字段一致）。cpx 据此把子代理记录写到 **`<父sid>/subagents/<子sid>.jsonl`** —— 与 claude 的布局完全一致，insight 侧零改动即可发现。子代理名/模式取自 `subagent/descriptor` 的 `label`/`mode`。工具名归一 `subagent → Agent`（insight 的 bridge-builder 只认 `task`/`Agent`），**仅对 dsh 会话生效**（claude 路径逐字节不变）。**注意：parent 标识不在 HTTP header 里**（dsh 的请求头无任何 parent 字段），而在 body 的私有扩展字段里。验证：insight 中 Execution 出现子代理（depth=1、token 单独归因）、Turn 带 subagentName、totalSubagentCount 正确、工具调用显示为 `Agent`。已知边界：① 子 meta 的 `toolUseId` 置 null —— 曾试从父侧 `tool_result` 推导并回填（`writer.patchMetaIfExists`），因前端收益仅一个 tooltip 字段而撤掉；② `workflow` 扇出的子代理有 `parentSession`（布局正确），但父侧无 `subagent` 派发调用，dispatch 箭头依赖 insight 的时间邻近兜底
-- 【dsh（DeepSeek Harness）捕获 profile】dsh 的默认模型出口是 Anthropic Messages 协议（`api.deepseek.com/anthropic` + `/v1/messages`），故复用既有 anthropic 链路：新增 `cpx dsh` / `--agent dsh`，以 `$DEEPSEEK_BASE_URL` 把 dsh 根地址指向 proxy（profile 显式 `baseURL` 会盖过该覆盖），上游取 `$DEEPSEEK_BASE_URL` 或官方根地址；会话 id 走 dsh 自己的 `x-deepseek-harness-session-id` 头命名捕获文件；emitter 经 `CANNBOT_PROXY_AGENT_FRAMEWORK=dsh` 落 `source:"dsh-proxy"` / `meta.framework:"dsh"`（此前 anthropic 协议一律标 `claude-proxy`），insight 分类器同步识别为 dsh。Tab 补全同步。门禁：cpx ut（cpx-args / session-resolver / claude-emitter）+ insight proxy-classify
+- 【dsh 子代理建链】dsh 子代理捕获写入 `<父sid>/subagents/` 布局（与 claude 一致），insight 零改动即可发现子代理
+- 【dsh 捕获 profile】新增 `cpx dsh`：复用 anthropic 协议链路，会话按 dsh 专属头命名，框架标记为 dsh
+
+## [v0.1.9] - 2026-10-10
+
+### Added
+- 【codex 自定义 provider 隧道】`~/.codex/config.toml` 的 `[model_providers.*]` 自定义网关全部可捕获，转发与直连字节级同构
+- 【codex 多子代理捕获】spawn 任务文本指纹路由，主 / 子线程独立文件，派发关联自动富化
+- 【codex reasoning 完整度】thinking 块（OpenAI 规范与网关双命名）与 reasoning_tokens 计费通道全量捕获
+- 【网络场景矩阵全覆盖】proxy 出口遵循 HTTP(S)_PROXY / NO_PROXY，agent→proxy 本地跳自动直连
+- 【wire dump 排障模式】`CANNBOT_PROXY_DUMP_DIR` 原始双向落盘（敏感头打码），与捕获管线分离
 
 ### Changed
 - 【insight 发现契约升级】自动导入目标从固定端口改为自动发现，多人服务器上各自对准自己的实例
+
+### Fixed
+- 【codex spawn 双形态未识别（0.162）】双形态归一识别，子代理独立成文件、meta 富化恢复，主文件零污染
+- 【codex 系统提示词捕获缺失】developer 消息形态的系统提示词随捕获落盘，不再恒空
+- 【codex 长会话压缩丢失】锚点验证 + 内容指纹重同步，上下文压缩边界零丢失
+- 【codex 子代理首轮误路由】按请求到达序落盘，竞态时序下子代理首轮不再误入主线程
 
 ## [v0.1.8] - 2026-09-30
 
