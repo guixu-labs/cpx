@@ -81,7 +81,7 @@ cpx claude                      # 交互式（/exit 退出后自动压缩，insi
 cpx opencode                    # opencode（无 -m 时自动覆盖 auth.json 全部已登录 provider + 项目级/全局 opencode.json[c] 自定义 provider）
 cpx opencode run -m alibaba-cn/glm-5.2 "..."   # 或 -m 精确指定单个 provider
 cpx cannbot                     # CANNBot（opencode 系 CANN fork，内建 cannbot provider）
-cpx codex                       # Codex（ChatGPT 登录或 OPENAI_API_KEY 均可）
+cpx codex                       # Codex（ChatGPT 登录 / OPENAI_API_KEY / 自定义 provider 均可，见下）
 cpx dsh headless "run the tests" # dsh / DeepSeek Harness（Anthropic Messages 协议）
 cpx dsh web                     # 同样支持 web / tui / 任意 profile，参数原样透传
 cpx -- aichat "..."             # 任意 OpenAI 兼容客户端
@@ -89,6 +89,15 @@ cpx --agent openai -- <cmd>     # 显式指定 profile
 ```
 
 使用习惯零变化：参数、交互、TUI 全部透传，cpx 只在旁边静默记录。
+
+**codex 的网络场景全覆盖**（`cpx codex` 自动适配，无需配置）：
+
+| 场景 | 机制 |
+|---|---|
+| 全局/窗口级梯子（HTTP(S)_PROXY） | proxy 出口遵循环境代理；agent→proxy 本地跳恒直连（自动注入 NO_PROXY） |
+| TUN 模式梯子 / 无代理直连 | 透明路由 / 直连回退 |
+| 自定义 provider（`~/.codex/config.toml` 的 `[model_providers.*]`，如 volcano/deepseek 网关） | 路径保真隧道：所有 provider 的 base_url 重定向到本地 proxy，转发与直连字节级同构 |
+| 多子代理会话（spawn_agent） | 每线程独立捕获文件 + 泳道元数据（nickname/agentId 自动关联） |
 
 **第三步：实时观察捕获（可选）**
 

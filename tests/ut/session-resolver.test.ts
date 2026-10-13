@@ -105,3 +105,24 @@ describe('isSafeSid：任何流入文件路径的 sid 都必须先过这里', ()
     expect(isSafeSid('session-x/../../../tmp/evil')).toBe(false);
   });
 });
+
+describe('protocolFromPath：provider 隧道的根路径 responses 识别', () => {
+  it('/<providerId>/responses（无 /v1 前缀的根路径 base_url）→ responses', () => {
+    const r = resolveSession('/gw/responses', () => null, null, 'cpx-pinned-sid');
+    expect(r.protocol).toBe('responses');
+    expect(r.sid).toBe('cpx-pinned-sid');
+  });
+
+  it('/<providerId>/<深层 path>/responses 同样识别（路径保真）', () => {
+    expect(resolveSession('/gw/api/v3/responses', () => null, null, 'sid').protocol).toBe('responses');
+  });
+
+  it('/v1/responses 既有形态不回归；GET 路径不在路由门内不受影响', () => {
+    expect(resolveSession('/v1/responses', () => null, null, 'sid').protocol).toBe('responses');
+  });
+
+  it('非 responses 后缀的路径不受影响（不误报）', () => {
+    expect(resolveSession('/v1/embeddings', () => null, null, 'sid').protocol).toBeNull();
+    expect(resolveSession('/gw/other', () => null, null, 'sid').protocol).toBeNull();
+  });
+});
