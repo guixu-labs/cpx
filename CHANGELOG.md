@@ -5,6 +5,16 @@
 ## [Unreleased]
 
 ### Added
+- 【上游解析统一（镜像契约）】各族上游解析收编为单点 `agent-upstream.ts`，解析链与 agent 自身配置源优先级同构，启动日志逐路标注来源 `(source: …)`；claude 族补齐进程 env `ANTHROPIC_BASE_URL` 与 project 级 settings 两层，openai/generic 补齐 `OPENAI_BASE_URL` env 层，codex 补齐 config.toml 顶层 `openai_base_url`（采纳时剥尾部 `/v1`）
+- 【anthropic 族 cpx 旋钮】`CANNBOT_PROXY_ANTHROPIC_UPSTREAM` 置顶 claude/dsh 解析链（与 openai 族既有旋钮对称）
+- 【上游解析 IT 矩阵】13 用例 e2e：假 agent 按各族真实端点发现机制取址 → 真实 POST 会话 proxy → 命名假上游记录命中，锁定全部层级序
+
+### Fixed
+- 【claude 进程 env 上游被无视（客户案）】settings.json 无 env 段 + 进程 env `ANTHROPIC_BASE_URL` 的场景此前硬编码回退官方地址，代理转发到错误上游
+- 【codex RESPONSES 旋钮被覆写】`CANNBOT_PROXY_RESPONSES_UPSTREAM` 此前被 chatgpt auth 检测以 `process.env` 突变覆盖（旋钮应为最高层）；突变本身移除，四路上游显式传参
+- 【dsh 缺 cpx 旋钮】`CANNBOT_PROXY_ANTHROPIC_UPSTREAM` 此前对 dsh 不生效
+
+### Changed
 - 【dsh 子代理建链】dsh 子代理捕获写入 `<父sid>/subagents/` 布局（与 claude 一致），insight 零改动即可发现子代理
 - 【dsh 捕获 profile】新增 `cpx dsh`：复用 anthropic 协议链路，会话按 dsh 专属头命名，框架标记为 dsh
 

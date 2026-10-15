@@ -145,11 +145,12 @@ function resolveUpstreamUrl(protocol: Protocol, urlPath: string): string {
       return PROVIDER_UPSTREAMS[m[1]].replace(/\/$/, '') + m[2];
     }
   }
-  // ChatGPT 登录用户的 upstream 是 chatgpt.com/backend-api/codex，
-  // 其路径约定是 /responses（不是 /v1/responses）。codex 发到 proxy
-  // /v1/responses（因为 cpx 设 base_url 带 /v1 后缀），转发时剥掉 /v1。
-  if (protocol === 'responses' && RESPONSES_UPSTREAM.includes('chatgpt.com')) {
-    const path = urlPath.replace(/^\/v1\//, '/');
+  // responses 协议：codex 向 base_url 追加 /responses；cpx 注入的 base_url
+  // 恒带 /v1 后缀，故请求路径恒为 /v1/responses。转发时剥路径前缀 /v1 →
+  // 还原 codex 直连上游时 base + /responses 的字节形态——chatgpt 后端、
+  // 官方 OpenAI、自建网关（base 不以 /v1 结尾）三种 base 形态都成立。
+  if (protocol === 'responses') {
+    const path = stripSessionPrefix(urlPath).replace(/^\/v1\//, '/');
     return RESPONSES_UPSTREAM.replace(/\/$/, '') + path;
   }
   return upstreamBase(protocol) + stripSessionPrefix(urlPath);

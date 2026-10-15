@@ -15,6 +15,8 @@
 // Deliberately hand-rolled lightweight TOML extraction (no toml dependency —
 // same discipline as the existing openai_base_url probe). We only need:
 //   [model_providers.<id>] blocks → base_url = "https://…" (+ wire_api)
+//   top-level openai_base_url → built-in openai provider endpoint (镜像契约:
+//   responses 协议真实上游的解析依据,见 agent-upstream.ts)
 // Bare keys and quoted string values only; anything else degrades to "not
 // present", after which capture falls back to the built-in openai paths
 // (openai_base_url override / cpx_proxy provider) — never breaks a run.
@@ -26,6 +28,8 @@ import path from 'node:path';
 export interface CodexProviderTable {
   /** provider id → real upstream base_url (verbatim from config.toml) */
   providers: Record<string, { baseUrl: string; wireApi: string | null }>;
+  /** config.toml 顶层 openai_base_url（codex 内置 openai 端点；null=未设） */
+  openaiBaseUrl: string | null;
 }
 
 // Bare-key ids only: a provider id becomes a URL path segment (`/<id>/…`),
@@ -53,6 +57,7 @@ export function readCodexProviderTable(
 
   const providers: Record<string, { baseUrl: string; wireApi: string | null }> = {};
   let section = ''; // '' = top-level
+  let openaiBaseUrl: string | null = null;
 
   for (const rawLine of text.split('\n')) {
     const line = rawLine.trim();
@@ -71,7 +76,12 @@ export function readCodexProviderTable(
     if (!kv) continue;
     const [, key, dq, sq] = kv;
     const value = dq ?? sq ?? '';
-    if (!section) continue; // top-level keys carry nothing we tunnel
+    if (!section) {
+      // 顶层键只收 openai_base_url（TOML 顶层键必须位于任何节头之前，
+      // 节后的裸键不可能是顶层语义）；其余顶层键无隧道/端点价值。
+      if (key === 'openai_base_url') openaiBaseUrl = value;
+      continue;
+    }
     const mp = section.match(/^model_providers\.(.+)$/);
     if (!mp) continue;
     const id = mp[1];
@@ -97,7 +107,7 @@ export function readCodexProviderTable(
       console.error(`[cpx] codex provider "${id}" has no parsable base_url — left direct (uncaptured, run unaffected)`);
     }
   }
-  return { providers };
+  return { providers, openaiBaseUrl };
 }
 
 // Memoized accessor for runtime (cpx-cli consults the table twice: once for

@@ -212,7 +212,12 @@ export function emit(rec: ProxyRecord): void {
     for (const b of blocks) {
       if (b.type !== 'tool_use' || !b.name) continue;
       const name = b.name.toLowerCase();
-      if (name !== 'task' && !name.includes('task')) continue;
+      // 派发工具族识别（与 insight ingest/dispatch-tools.ts 注册表语义对齐——
+      // 两包不互相 import，白名单手工同步）：task 族 + subagent 族。后者是
+      // 自定义派发插件（如 reuseDispatch 实验的 subagent 工具，args 带
+      // agent/sessionID）——不在旧白名单内会让子会话 meta 的 name/agentType
+      // 全空，下游名字链断
+      if (name !== 'task' && !name.includes('task') && !name.includes('subagent')) continue;
       const inp = b.input as { description?: string; prompt?: string; subagent_type?: string; agent?: string } | undefined;
       const sig = inp?.prompt ?? inp?.description ?? b.id ?? '';
       if (sig && !taskDispatch.has(sig)) {
@@ -302,7 +307,20 @@ export function emit(rec: ProxyRecord): void {
       if (m.role !== 'user') continue;
       const t = typeof m.content === 'string' ? m.content : '';
       if (!t) continue;
-      const d = taskDispatch.get(t);
+      // 精确匹配（内置 task：子会话首条 user 即派发 prompt 原文）失败时回退
+      // 包含式——自定义派发插件（reuseDispatch 的 subagent 工具）会在子会话
+      // 首条 user 前加样板前缀（'You are a subagent spawned by another
+      // session.\n\n' + prompt），精确匹配永远失配 → meta 全空 → 名字链断。
+      // 命中的候选里取最长 sig（最特异）：派发 prompt 常有模板化前缀（短 sig
+      // 是长 sig 前缀时），先收集的短 sig 会被长 prompt 先命中 → 名字写成
+      // 另一个派发的值
+      const d = taskDispatch.get(t)
+        ?? [...taskDispatch.entries()]
+          .filter(([sig]) => sig.length > 16 && t.includes(sig))
+          .reduce<[string, { toolUseId: string | null; name: string | null; agentType: string | null }] | undefined>(
+            (best, cur) => (best == null || cur[0].length > best[0].length ? cur : best),
+            undefined,
+          )?.[1];
       if (d) { meta = d; break; }
     }
     writeMeta(subagentMetaPath(mainSid, subId), {

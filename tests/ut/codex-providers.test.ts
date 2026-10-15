@@ -46,6 +46,27 @@ wire_api = "responses"
     });
   });
 
+  it('顶层 openai_base_url 捕获（responses 协议真实上游依据）；节内同名键不串位', () => {
+    const file = withConfig(`
+openai_base_url = "https://relay.example.com/v1"
+
+[model_providers.volcano]
+base_url = "https://gw.example.com/v1"
+openai_base_url = "https://section-scoped.example.com/v1"
+`);
+    const table = readCodexProviderTable(file)!;
+    expect(table.openaiBaseUrl).toBe('https://relay.example.com/v1');
+    expect(table.providers['volcano'].baseUrl).toBe('https://gw.example.com/v1');
+  });
+
+  it('顶层 openai_base_url 未设 → null（降级语义，不臆造端点）', () => {
+    const file = withConfig(`
+[model_providers.volcano]
+base_url = "https://gw.example.com/v1"
+`);
+    expect(readCodexProviderTable(file)!.openaiBaseUrl).toBeNull();
+  });
+
   it('多 provider 全部收齐；缺 base_url 的条目剔除并提示（不再静默零捕获）', () => {
     const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     const file = withConfig(`
@@ -193,6 +214,7 @@ describe('tunnelBaseUrl：路径保真隧道', () => {
 describe('providerUpstreamOrigins：origin-only upstream 表', () => {
   it('只留 scheme+host+port（proxy 侧重新拼被剥的路径）；畸形项跳过', () => {
     const table = {
+      openaiBaseUrl: null,
       providers: {
         volcano: { baseUrl: 'https://gw.example.com/v1', wireApi: 'responses' },
         other: { baseUrl: 'http://h2.example.com:8080/base', wireApi: null },

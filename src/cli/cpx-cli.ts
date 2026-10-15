@@ -19,7 +19,8 @@ import { parseOpencodeProvider, readAuthProvidersFromFile, readCustomProvidersFr
 import { codexProviderTable, tunnelBaseUrl, providerUpstreamOrigins } from './codex-providers';
 import { loopbackNoProxy } from './child-env';
 import { resolveTsxLoader } from './tsx-launcher';
-import { parseArgs } from './cpx-args';
+import { parseArgs, type AgentProfile } from './cpx-args';
+import { resolveProxyUpstreams, primaryUpstream, type ProxyUpstreams, type ClaudeAuthConfig } from './agent-upstream';
 import { runCompleteMain } from './cpx-complete';
 import { dropSessionScratch, sweepLeakedPlaceholders } from './cpx-scratch';
 import { findProxyProcs, dedupePairs, isOrphanedProc, type ProxyProc } from './proxy-procs';
@@ -68,7 +69,6 @@ function runConfig(args: string[]): void {
   console.error('用法: cpx config [dedup on|off]');
   process.exit(2);
 }
-const CLAUDE_SETTINGS = path.join(os.homedir(), '.claude', 'settings.json');
 // 发现契约（env → 用户级端口登记 → 21025 兜底）：多人服务器上每人各自端口
 // 零配置对准自己的实例；IT 用 CANNBOT_CPX_INSIGHT_BASE 指 mock insight
 const INSIGHT_BASE = resolveInsightBase();
@@ -94,35 +94,7 @@ agent 退出后自动压缩归档；insight 在运行则自动导入并开浏览
 \`~/.cannbot-insight/proxy/\` 目录）。安装：./proxy/install.sh（独立）或根
 目录 ./start.sh（一体化，内部调用前者）。`;
 
-type AgentProfile = 'claude' | 'opencode' | 'cannbot' | 'codex' | 'dsh' | 'openai' | 'generic';
-
 function log(msg: string): void { console.error(`[cpx-cli] ${msg}`); }
-
-interface ClaudeSettings {
-  upstream: string;
-  apiKey: string | null;
-  model: string | null;
-}
-
-function readClaudeSettings(): ClaudeSettings {
-  const fallback: ClaudeSettings = {
-    upstream: 'https://api.anthropic.com',
-    apiKey: process.env.ANTHROPIC_API_KEY ?? null,
-    model: process.env.ANTHROPIC_MODEL ?? null,
-  };
-  try {
-    const raw = fs.readFileSync(CLAUDE_SETTINGS, 'utf-8');
-    const env = (JSON.parse(raw).env ?? {}) as Record<string, string>;
-    return {
-      upstream: env.ANTHROPIC_BASE_URL ?? fallback.upstream,
-      apiKey: env.ANTHROPIC_API_KEY ?? fallback.apiKey,
-      model: env.ANTHROPIC_MODEL ?? fallback.model,
-    };
-  } catch {
-    return fallback;
-  }
-}
-
 
 // Fast single-shot probe (localhost connection-refused is instant) — used to
 // decide opportunistic import at capture exit and for the startup info line.
@@ -140,7 +112,7 @@ interface SessionProxy {
   stop: () => void;
 }
 
-function startSessionProxy(sid: string, anthropicUpstream: string, openaiUpstream: string, providerUpstreams: Record<string, string>): Promise<SessionProxy> {
+function startSessionProxy(sid: string, upstreams: ProxyUpstreams): Promise<SessionProxy> {
   fs.mkdirSync(PROXY_DIR, { recursive: true });
   // 会话代理以 node --import <tsx loader> 起 TS 源码：loader 从本文件位置标准
   // 解析（bin/cpx.mjs 同款纪律——npm i -g 嵌套 / 用户项目安装 hoist 提升两布局
@@ -158,9 +130,10 @@ function startSessionProxy(sid: string, anthropicUpstream: string, openaiUpstrea
           ...process.env,
           CANNBOT_PROXY_PORT: '0',
           CANNBOT_PROXY_SESSION_ID: sid,
-          CANNBOT_PROXY_ANTHROPIC_UPSTREAM: anthropicUpstream,
-          CANNBOT_PROXY_OPENAI_UPSTREAM: openaiUpstream,
-          CANNBOT_PROXY_PROVIDER_UPSTREAMS: JSON.stringify(providerUpstreams),
+          CANNBOT_PROXY_ANTHROPIC_UPSTREAM: upstreams.anthropic.upstream,
+          CANNBOT_PROXY_OPENAI_UPSTREAM: upstreams.openai.upstream,
+          CANNBOT_PROXY_RESPONSES_UPSTREAM: upstreams.responses.upstream,
+          CANNBOT_PROXY_PROVIDER_UPSTREAMS: JSON.stringify(upstreams.providerUpstreams),
         },
       });
     let port = 0;
@@ -432,7 +405,7 @@ function withStandalone(agentCmd: string, agentArgs: string[]): string[] {
     : agentArgs;
 }
 
-function buildLaunch(profile: AgentProfile, proxyPort: number, claude: ClaudeSettings, agentArgs: string[] = [], agentCmd = ''): LaunchPlan {
+function buildLaunch(profile: AgentProfile, proxyPort: number, claude: ClaudeAuthConfig, agentArgs: string[] = [], agentCmd = ''): LaunchPlan {
   // Per-session port: no sid encoded in URL path. The proxy pins sid via env,
   // so base_url is a clean host (survives SDK URL normalization).
   const proxyUrl = `http://127.0.0.1:${proxyPort}`;
@@ -823,15 +796,6 @@ async function main(): Promise<void> {
     ? `up — 退出后自动导入并开浏览器`
     : 'not running — 捕获独立完成，之后在 insight Web UI「Import Session → JSONL」导入'}`);
 
-  const claude = readClaudeSettings();
-  // opencode's real upstream (OpenAI-protocol) — best-effort from env, since
-  // opencode's built-in provider baseURLs live in opencode internals, not the
-  // user's opencode.json. Override via CANNBOT_PROXY_OPENAI_UPSTREAM if wrong.
-  const openaiUpstream = process.env.CANNBOT_PROXY_OPENAI_UPSTREAM ?? 'https://api.openai.com';
-  // dsh（DeepSeek Harness）的模型出口是 Anthropic Messages 协议，官方根地址为
-  // api.deepseek.com/anthropic；用户已设 $DEEPSEEK_BASE_URL 时它才是真实上游。
-  const deepseekUpstream = process.env.DEEPSEEK_BASE_URL?.trim() || 'https://api.deepseek.com/anthropic';
-
   // Validate opencode capture preconditions BEFORE starting the proxy, so a
   // missing provider config exits cleanly instead of starting an orphan proxy
   // that captures nothing (the original "0 capture file" bug). opencode ignores
@@ -860,14 +824,18 @@ async function main(): Promise<void> {
   // to its real upstream (origin-only — the proxy re-appends the path). This
   // is what makes gateway/self-hosted scenarios (volcano, deepseek, …)
   // capturable at all: without the tunnel their traffic never touches cpx.
-  const codexTunnelUpstreams = profile === 'codex'
-    ? providerUpstreamOrigins(codexProviderTable() ?? { providers: {} })
-    : {};
-  const providerUpstreams = profile === 'opencode' || profile === 'cannbot'
-    ? discoverProviderUpstreams(opencodeProviderIds)
-    : profile === 'codex'
-      ? codexTunnelUpstreams
-      : {};
+  const codexTable = profile === 'codex' ? codexProviderTable() : null;
+  // 上游解析单点（镜像契约）：每族解析链与该 agent 自身配置源优先级同构
+  // （链序依据与 cpx 级旋钮语义详见 agent-upstream.ts 头注），逐路带
+  // source 标注。per-provider 发现（二进制/配置扫描）与 codex 隧道表属
+  // 机械层，此处算好注入；单协议链式解析全部收在 agent-upstream.ts。
+  const upstreams = resolveProxyUpstreams(profile, {
+    opencodeUpstreams: profile === 'opencode' || profile === 'cannbot'
+      ? discoverProviderUpstreams(opencodeProviderIds)
+      : undefined,
+    codexTunnels: codexTable ? providerUpstreamOrigins(codexTable) : undefined,
+    codexOpenaiBaseUrl: codexTable ? codexTable.openaiBaseUrl : null,
+  });
 
   const sid = randomUUID();
 
@@ -882,31 +850,12 @@ async function main(): Promise<void> {
     } catch { /* best-effort */ }
   }
 
-  // codex ChatGPT 登录用户：proxy 上游需指向 chatgpt.com 后端（不是
-  // api.openai.com）。检测 ~/.codex/auth.json 是否存在来判断 auth 模式。
-  // cpx 已有 API key 的走自定义 provider（api.openai.com），不需要此覆盖。
-  if (profile === 'codex' && !process.env.OPENAI_API_KEY) {
-    const codexAuth = path.join(os.homedir(), '.codex', 'auth.json');
-    if (fs.existsSync(codexAuth)) {
-      process.env.CANNBOT_PROXY_RESPONSES_UPSTREAM = 'https://chatgpt.com/backend-api/codex';
-    }
-  }
-
-  // dsh 与 claude 同为 anthropic 协议：只需换上游。框架标签由 emitter 从
-  // wire 自描述判定（body.dsh_session_log），cpx-cli 不必知道具体 agent。
-  const anthropicUpstream = profile === 'dsh' ? deepseekUpstream : claude.upstream;
-  const sessionProxy = await startSessionProxy(sid, anthropicUpstream, openaiUpstream, providerUpstreams);
+  // dsh 与 claude 同为 anthropic 协议：只需换上游（链内按 profile 分派，
+  // 见 agent-upstream.ts）。框架标签由 emitter 从 wire 自描述判定
+  // （body.dsh_session_log），cpx-cli 不必知道具体 agent。
+  const sessionProxy = await startSessionProxy(sid, upstreams);
   const jsonlPath = sessionFilePath(sid);
-  const { env, args } = buildLaunch(profile, sessionProxy.port, claude, agentArgs, agentCmd);
-
-  // codex 隧道生效时实际按 provider 表逐个路由，日志仍打 openai 上游会误
-  // 导排障——隧道非空时显示隧道数。
-  const codexTunnelCount = Object.keys(codexTunnelUpstreams).length;
-  const displayUpstream = profile === 'dsh' ? deepseekUpstream
-    : profile === 'cannbot' ? (providerUpstreams['cannbot'] ?? openaiUpstream)
-    : profile === 'codex' && codexTunnelCount > 0 ? `${codexTunnelCount} provider tunnel(s) + ${openaiUpstream}`
-    : profile === 'opencode' || profile === 'openai' || profile === 'generic' || profile === 'codex' ? openaiUpstream
-    : claude.upstream;
+  const { env, args } = buildLaunch(profile, sessionProxy.port, upstreams.claude, agentArgs, agentCmd);
 
   // Ensure the per-session proxy dies with cpx-cli, even on signals. Kill the
   // whole process GROUP (npx → tsx → node server.ts + esbuild grandchild):
@@ -965,9 +914,12 @@ async function main(): Promise<void> {
   process.on('exit', () => { try { killProxyGroup('SIGKILL'); } catch { /* */ } });
 
   log(`session: ${sid}`);
-  log(`profile: ${profile}  upstream: ${displayUpstream}`);
+  // 逐族主流量上游 + 来源标注（排障时直接看出「为什么转发到这」——每条链
+  // 的解析依据见 agent-upstream.ts 头注）
+  const display = primaryUpstream(profile, upstreams);
+  log(`profile: ${profile}  upstream: ${display.upstream}  (source: ${display.source})`);
   if (profile === 'dsh') {
-    log(`  dsh baseURL → proxy via $DEEPSEEK_BASE_URL  (真实上游 ${deepseekUpstream})`);
+    log('  dsh baseURL → proxy via $DEEPSEEK_BASE_URL');
     log('  note: profile 的 cordis.patch.yml 若显式写了 llm-deepseek baseURL，会盖过该覆盖');
   }
   if (profile === 'opencode' || profile === 'cannbot') {
@@ -976,9 +928,9 @@ async function main(): Promise<void> {
       : 'auth.json + opencode.json[c]';
     log(`  opencode providers: ${ids.join(', ')}  (from ${src}; baseURL → proxy via /<providerId>/ prefix)`);
     for (const id of ids) {
-      const up = providerUpstreams[id];
+      const up = upstreams.providerUpstreams[id];
       if (up) log(`    ${id} → ${up}`);
-      else log(`    ${id} → (upstream not found in binary/models.dev cache/config; will use default ${openaiUpstream} — set CANNBOT_PROXY_OPENAI_UPSTREAM if wrong)`);
+      else log(`    ${id} → (upstream not found in binary/models.dev cache/config; will use default ${upstreams.openai.upstream} — set CANNBOT_PROXY_OPENAI_UPSTREAM if wrong)`);
     }
     log(`  2.x isolation: ${args.includes('--standalone')
       ? '--standalone 已注入（私有服务，OPENCODE_CONFIG_CONTENT 对发调进程生效）'
