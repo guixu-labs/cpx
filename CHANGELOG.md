@@ -2,7 +2,9 @@
 
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 
-## [Unreleased]
+## [v0.1.11] - 2026-10-21
+
+> 对齐说明：npm v0.1.10 为 0.2.38 撤回重发的换号版，未含 v0.1.9 的 codex 捕获修复；本版起 npm 产物与 git master 对齐。
 
 ### Added
 - 【上游解析统一（镜像契约）】各族上游解析收编为单点 `agent-upstream.ts`，解析链与 agent 自身配置源优先级同构，启动日志逐路标注来源 `(source: …)`；claude 族补齐进程 env `ANTHROPIC_BASE_URL` 与 project 级 settings 两层，openai/generic 补齐 `OPENAI_BASE_URL` env 层，codex 补齐 config.toml 顶层 `openai_base_url`（采纳时剥尾部 `/v1`）
