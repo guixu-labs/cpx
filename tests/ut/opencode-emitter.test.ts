@@ -7,8 +7,8 @@
 // See LICENSE in the root of the software repository for the full text of the License.
 
 // Self-contained opencode-emitter test: verify the emitter's JSON OUTPUT is
-// correct extended claude-format (no cannbot-insight / Prisma dependency).
-// The cannbot-insight claude-jsonl adapter (its own tests) consumes this format;
+// correct extended claude-format (no context-insight / Prisma dependency).
+// The context-insight claude-jsonl adapter (its own tests) consumes this format;
 // the two sides are coupled only by the format contract — same as the
 // claude-emitter tests, but for the OpenAI-wire → claude-format conversion.
 
@@ -22,7 +22,7 @@ import { sessionFilePath } from '../../src/writer.ts';
 const SID = 'sid-main';
 const FIXTURE = path.resolve(__dirname, 'data/opencode-wire-records.jsonl');
 const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cpx-opencode-'));
-process.env.CANNBOT_PROXY_DIR = tmpDir; // BEFORE sessionFilePath is evaluated at module scope
+process.env.CONTEXT_PROXY_DIR = tmpDir; // BEFORE sessionFilePath is evaluated at module scope
 const mainFile = sessionFilePath(SID); // cpx- prefixed, keyed by real sid
 const subagentsDir = path.join(tmpDir, SID, 'subagents');
 
@@ -224,7 +224,7 @@ describe('opencode-emitter: header-routed sessions (x-session-id + x-parent-sess
 
 // 思考流捕获（DeepSeek 系 reasoning_content → 重组器产出 thinking 块）：
 // emitter 是纯透传层，契约 = thinking 块原样落 jsonl（insight claude-jsonl
-// 转 <thinking> 文本）+ reasoning tokens 走 x_cannbay cc-wire-round 声明式
+// 转 <thinking> 文本）+ reasoning tokens 走 x_lake cc-wire-round 声明式
 // 通道（legacy usage 无 reasoning 字段可载）。现场 ses_f4da12dc：修复前
 // 109/182 轮 assistant 无任何文本、insight 大量 turn 没有 LLM Output。
 describe('opencode-emitter: reasoning 透传（DeepSeek 思考流）', () => {
@@ -266,9 +266,9 @@ describe('opencode-emitter: reasoning 透传（DeepSeek 思考流）', () => {
     // usage 原样透传（reasoning_tokens 随 AnthropicUsage 扩展字段同行）
     expect(asst.message.usage.reasoning_tokens).toBe(5);
     // 声明式通道：insight claude-jsonl 对 cc-wire-round v1 既有 reasoningTokens 读取
-    expect(asst.x_cannbay.schema).toBe('cc-wire-round');
-    expect(asst.x_cannbay.version).toBe(1);
-    expect(asst.x_cannbay.data.reasoningTokens).toBe(5);
+    expect(asst.x_lake.schema).toBe('cc-wire-round');
+    expect(asst.x_lake.version).toBe(1);
+    expect(asst.x_lake.data.reasoningTokens).toBe(5);
   });
 
   it('无 reasoning_tokens 的 usage → cc-wire-round 不携带 reasoningTokens 键（非 0 语义）', () => {
@@ -296,6 +296,6 @@ describe('opencode-emitter: reasoning 透传（DeepSeek 思考流）', () => {
       userAgent: 'opencode/1.17.9',
     });
     const asst = readJsonl(sessionFilePath('ses_RSN_B')).find(r => r.type === 'assistant');
-    expect(asst.x_cannbay.data).not.toHaveProperty('reasoningTokens');
+    expect(asst.x_lake.data).not.toHaveProperty('reasoningTokens');
   });
 });

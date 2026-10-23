@@ -1,22 +1,22 @@
-# cannbot-proxy（`cpx`）
+# context-cpx（`cpx`）
 
 ## 项目介绍
 
-LLM coding agent（Claude Code / opencode / CANNBot / Codex …）本质是黑盒：发给模型的完整上下文、system prompt 的增长、注入的 skills、子代理的 token 消耗、每轮真实延迟——既看不全也留不下来，行为难以复现。cannbot-proxy 在 agent 与模型 API 之间放一个透传捕获代理，把 wire 层发生的一切 verbatim 明文留存。
+LLM coding agent（Claude Code / opencode / CANNBot / Codex …）本质是黑盒：发给模型的完整上下文、system prompt 的增长、注入的 skills、子代理的 token 消耗、每轮真实延迟——既看不全也留不下来，行为难以复现。context-cpx 在 agent 与模型 API 之间放一个透传捕获代理，把 wire 层发生的一切 verbatim 明文留存。
 
 ```
 agent 子进程 ──HTTP──▶ cpx（per-session proxy）──透传──▶ 真实 upstream 模型 API
                           │
                           ▼ tee 流 + SSE 重组 + 密钥清洗
-                ~/.cannbot-insight/proxy/cpx-<sid>.jsonl   ← 明文存档（单一事实源）
+                ~/.context-insight/proxy/cpx-<sid>.jsonl   ← 明文存档（单一事实源）
 ```
 
-定位：**wire 级明文存档**——逐字节捕获真实请求与响应（含 SSE 重组），会话结束得到可审计、可复现、可离线分析的单文件事实源；作为 [cannbot-insight](../insight) 的采集端（扩展 claude-format JSONL，insight 零改动消费）；纯透传不干预（转发与无 cpx 时逐字节一致）；框架中立（三协议五框架同一格式契约）。
+定位：**wire 级明文存档**——逐字节捕获真实请求与响应（含 SSE 重组），会话结束得到可审计、可复现、可离线分析的单文件事实源；作为 [context-insight](../insight) 的采集端（扩展 claude-format JSONL，insight 零改动消费）；纯透传不干预（转发与无 cpx 时逐字节一致）；框架中立（三协议五框架同一格式契约）。
 
 ## 项目优势
 
 - **一条命令拉起捕获栈**：`cpx claude` / `cpx opencode` / `cpx cannbot` / `cpx codex` / `cpx dsh`，在原有命令前加 `cpx` 即可，其他使用完全无变化
-- **捕获独立于 insight**：不需要 cannbot-insight 在运行；insight 在跑则捕获退出时自动导入并开浏览器，否则保留捕获文件待 insight Web UI 导入
+- **捕获独立于 insight**：不需要 context-insight 在运行；insight 在跑则捕获退出时自动导入并开浏览器，否则保留捕获文件待 insight Web UI 导入
 - **零残留注入**：override 只活在 cpx 起的那个进程里（claude `--settings` / opencode `OPENCODE_CONFIG_CONTENT` / codex `-c`），退出即净，不碰任何全局配置
 - **三协议支持**：Anthropic Messages、OpenAI Chat Completions、OpenAI Responses API，各自独立的 emitter 与 SSE 重组器
 - **子代理捕获**：claude / opencode 双路由，产物对齐 insight 原生 `subagents/` 布局
@@ -32,9 +32,9 @@ agent 子进程 ──HTTP──▶ cpx（per-session proxy）──透传──
 **方式一：npm 一键安装（推荐）**
 
 ```bash
-npm install -g cannbot-proxy
+npm install -g context-cpx
 cpx claude -p "用一句话介绍自己"    # 冒烟验证；国内网络可加 --registry=https://registry.npmmirror.com
-npm install -g context-cpx        # 同一工具的 Context 品牌变体（命令仍为 cpx，捕获目录 ~/.context-insight/proxy，与 cannbot-proxy 同 bin 名不可同机共装）
+npm install -g cannbot-proxy      # 同一工具的 CANNBot 品牌变体（命令仍为 cpx，捕获目录 ~/.cannbot-insight/proxy，与 context-cpx 同 bin 名不可同机共装）
 ```
 
 安装即自动装配 Tab 补全（bash 写入 `~/.local/share/bash-completion/completions/`；zsh 用户装配 `~/.zfunc/`），新开终端 `cpx <TAB>` 即可用。
@@ -42,7 +42,7 @@ npm install -g context-cpx        # 同一工具的 Context 品牌变体（命�
 **方式二：源码安装**
 
 ```bash
-git clone <本仓地址> && cd cannbot-proxy
+git clone <本仓地址> && cd packages/cpx
 ./install.sh
 ```
 
@@ -66,7 +66,7 @@ cpx claude -p "用一句话介绍自己"
 命令结束后观察输出：打印的捕获文件路径非空、`captured xxxKB` 字样出现，说明全链路（注入 → 拦截 → 透传 → 落盘）已通。也可以随时 `cpx list` 查看捕获清单：
 
 ```
-captures dir : ~/.cannbot-insight/proxy
+captures dir : ~/.context-insight/proxy
 共 3 个会话 · 合计 2.4MB — 按时间降序
 
   TIME                 SID             SIZE       FRAMEWORK    PROTOCOL   SUB  STATE  FILE
@@ -104,14 +104,14 @@ cpx --agent openai -- <cmd>     # 显式指定 profile
 会话进行中，捕获文件是明文追加的。开另一个终端：
 
 ```bash
-tail -F ~/.cannbot-insight/proxy/*.jsonl     # 逐行看 wire 记录落盘
+tail -F ~/.context-insight/proxy/*.jsonl     # 逐行看 wire 记录落盘
 cpx status                                   # proxy 进程状态 + 最近捕获 + 压缩率
 ```
 
 **第四步：进入分析**
 
 - **insight 在运行**：agent 退出时自动导入（POST `/api/ingest/import-file`）并打开浏览器，直达 `http://localhost:21025/session/<sid>` 的 10 tab 分析面（轮次 / 上下文构成 / token / 延迟 / 子代理 / Full Context）
-- **insight 未运行**：捕获保留在 `~/.cannbot-insight/proxy/`，之后在 insight Web UI「Import Session → JSONL」选该目录（支持扫描）或单选某个文件导入；`cpx list` 可随时浏览清单
+- **insight 未运行**：捕获保留在 `~/.context-insight/proxy/`，之后在 insight Web UI「Import Session → JSONL」选该目录（支持扫描）或单选某个文件导入；`cpx list` 可随时浏览清单
 
 **常用进阶**
 
@@ -145,7 +145,7 @@ cpx 对 agent 完全透明：转发请求与上游响应逐字节透传、密钥
 ## 数据落点与格式
 
 ```
-~/.cannbot-insight/proxy/
+~/.context-insight/proxy/
 ├── cpx-<sid>.jsonl(.gz)      verbatim 主捕获（单一事实源；sid = agent 真实 session id）—— insight 直接导入这个
 ├── cpx-<sid>.meta.json       会话级声明（cc-session-meta：framework/protocol/version）
 └── <sid>/subagents/          子代理 verbatim 捕获 + meta.json（toolUseId 桥接）
@@ -157,10 +157,10 @@ insight 导入与长期 serving 均直读 verbatim（`.jsonl.7z` / `.jsonl.gz` �
 
 ## 导入分析
 
-导入是 **cannbot-insight 自身的职责**（proxy 不启动 insight）：
+导入是 **context-insight 自身的职责**（proxy 不启动 insight）：
 
 - insight 在运行时，捕获退出即自动导入（POST `/api/ingest/import-file`）并打开浏览器
-- 手动导入：insight Web UI「Import Session → JSONL」选 `~/.cannbot-insight/proxy/` 目录（支持扫描）或单选某个文件
+- 手动导入：insight Web UI「Import Session → JSONL」选 `~/.context-insight/proxy/` 目录（支持扫描）或单选某个文件
 
 ## 密钥安全
 
@@ -172,12 +172,12 @@ API key / 凭据永不落盘。headers 本就不落盘；清洗的是**内容级
 
 | 变量 | 默认 | 说明 |
 |------|------|------|
-| `CANNBOT_PROXY_DIR` | `~/.cannbot-insight/proxy` | 捕获目录 |
-| `CANNBOT_PROXY_OPENAI_UPSTREAM` | `https://api.openai.com` | 二进制扫描不到的 provider 的兜底 upstream |
-| `CANNBOT_CPX_INSIGHT_BASE` | `http://localhost:21025` | insight 服务地址（自动导入；测试用 mock insight 覆写） |
+| `CONTEXT_PROXY_DIR` | `~/.context-insight/proxy` | 捕获目录 |
+| `CONTEXT_PROXY_OPENAI_UPSTREAM` | `https://api.openai.com` | 二进制扫描不到的 provider 的兜底 upstream |
+| `CONTEXT_CPX_INSIGHT_BASE` | `http://localhost:21025` | insight 服务地址（自动导入；测试用 mock insight 覆写） |
 | `HTTPS_PROXY` / `HTTP_PROXY` / `ALL_PROXY` | - | 用户 HTTP 代理（clash/v2ray 等），显式配置 undici ProxyAgent |
 
-运行时配置存于 `~/.cannbot-insight/cpx-config.json`（`cpx config` 管理）：`dedupInjection`（注入压缩，默认关闭）。`CANNBOT_PROXY_*` 其余变量（PORT / SESSION_ID / PROVIDER_UPSTREAMS / …）由 cpx-cli 内部使用，无需手动设置。
+运行时配置存于 `~/.context-insight/cpx-config.json`（`cpx config` 管理）：`dedupInjection`（注入压缩，默认关闭）。`CONTEXT_PROXY_*` 其余变量（PORT / SESSION_ID / PROVIDER_UPSTREAMS / …）由 cpx-cli 内部使用，无需手动设置。
 
 ## 仓结构
 
@@ -187,7 +187,7 @@ API key / 凭据永不落盘。headers 本就不落盘；清洗的是**内容级
 ├── install.sh               # 独立安装器
 ├── scripts/
 │   ├── postinstall.mjs      # 安装钩子：Tab 补全自动装配
-│   └── pack-context.mjs     # context 品牌变体打包（staging 变换 + npm pack）
+│   └── pack-cannbot.mjs     # cannbot 品牌变体打包（staging 变换 + npm pack）
 ├── docs/                    # 设计文档
 │   ├── DESIGN.md            #   总体设计（架构 / 决策 / 边界）
 │   ├── OPENCODE-DESIGN.md   #   opencode 适配（wire 实证 / provider 发现 / 前缀路由）
@@ -218,7 +218,7 @@ API key / 凭据永不落盘。headers 本就不落盘；清洗的是**内容级
 npm run test        # vitest run — 全部测试
 ```
 
-proxy 测试自包含：只验证 emitter/writer/redactor 等模块的 JSON 输出契约，不依赖 cannbot-insight / Prisma——两侧仅靠 claude-format 格式契约耦合，可独立演进。
+proxy 测试自包含：只验证 emitter/writer/redactor 等模块的 JSON 输出契约，不依赖 context-insight / Prisma——两侧仅靠 claude-format 格式契约耦合，可独立演进。
 
 ## 架构原则
 

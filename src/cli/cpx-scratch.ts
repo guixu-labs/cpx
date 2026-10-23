@@ -10,7 +10,7 @@
 //   · dropSessionScratch —— 信号路径（SIGINT/SIGTERM）退出前的清理。正常
 //     退出路径本就清理（cpx-cli 收尾段），但信号 handler 此前直接
 //     process.exit 跳过收尾——每次 Ctrl+C 泄漏一个 0 字节占位 + 孤儿清单
-//     （实测 2026-09-20：~/.cannbot-insight/proxy 积压三个空壳）。
+//     （实测 2026-09-20：~/.context-insight/proxy 积压三个空壳）。
 //   · sweepLeakedPlaceholders —— 启动期扫除历史积压（SIGKILL 残留等信号
 //     清理也到不了的形态）。纯函数：目录 + 活 pinned sid 集注入，liveness
 //     判定（findProxyProcs 的 /proc 扫描）由调用方负责。

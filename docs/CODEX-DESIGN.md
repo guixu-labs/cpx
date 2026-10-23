@@ -3,7 +3,7 @@
 ## 目标
 
 在现有 cpx proxy 框架上新增第三个 agent 框架适配：OpenAI Codex CLI。
-产出的 jsonl 走 x_cannbay schema（cc-wire-round/cc-wire-input/cc-session-meta），
+产出的 jsonl 走 x_lake schema（cc-wire-round/cc-wire-input/cc-session-meta），
 insight 原生导入即可消费，与 claude-code / opencode 两路形状对齐。
 
 ## Codex 特征（源码验证）
@@ -48,7 +48,7 @@ codex CLI
 │                     └ ResponsesApiReassembler (新增)   │
 │  codex-emitter.ts   (新增) responses → claude-format   │
 │  normalize/         (既有) 布局归一                       │
-│  writer.ts          (既有) 落盘 + x_cannbay             │
+│  writer.ts          (既有) 落盘 + x_lake             │
 └────────────────────────────────────────────────────────┘
   ↓ norm/<sid>.jsonl (cc-wire-round, protocol:'responses')
 insight 原生导入 → DB → UI
@@ -129,7 +129,7 @@ Responses API SSE 事件流 → AnthropicContentBlock[] + usage。
   "system": <系统提示词>,              // wire 双形态：body.instructions（部分版本/网关）优先；缺省取 input 里 developer 消息全文（0.161 真机唯一形态）
   "tools": body.tools,                  // verbatim
   "source": "codex-proxy",
-  "x_cannbay": {"schema":"cc-wire-round","version":1,"data":{
+  "x_lake": {"schema":"cc-wire-round","version":1,"data":{
     "protocol": "responses",
     "roundIndex": ...,
     "system": <系统提示词（同上行，wire 双形态归一）>,
@@ -148,7 +148,7 @@ Responses API SSE 事件流 → AnthropicContentBlock[] + usage。
 **session-meta**：
 ```json
 {
-  "x_cannbay": {"schema":"cc-session-meta","version":1,"data":{
+  "x_lake": {"schema":"cc-session-meta","version":1,"data":{
     "producer": "cpx",
     "framework": "codex",
     "protocol": "responses",
@@ -360,7 +360,7 @@ roundIndex 跨压缩连续（压缩是线程内事件，不重置轮次）。
 
 ## 5. 观测与排障：dump 模式
 
-`CANNBOT_PROXY_DUMP_DIR=/path` 开启原始 wire 双向落盘：每调用一对
+`CONTEXT_PROXY_DUMP_DIR=/path` 开启原始 wire 双向落盘：每调用一对
 `<seq>-request.json`（headers 敏感项打码）+ `<seq>-response.txt`（8MB 截断）。
 与捕获管线（PROXY_DIR）完全分离——回答 wire 格式问题的调试工具（本轮
 reasoning 双命名即由它发现），不参与任何 emitter 消费。

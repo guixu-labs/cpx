@@ -30,7 +30,7 @@ const SID = 'cpx-codex-thread';
 const FIXTURE = path.resolve(__dirname, 'data/cpx-codex-thread.jsonl');
 const TASK_TEXT = '你是资料整理助手 Cartographer。工作目录：/workspace/demo。请整理 docs 目录的资料并输出摘要。';
 const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cpx-codex-emit-'));
-process.env.CANNBOT_PROXY_DIR = tmpDir; // BEFORE sessionFilePath 评估（模块级懒读）
+process.env.CONTEXT_PROXY_DIR = tmpDir; // BEFORE sessionFilePath 评估（模块级懒读）
 
 const mainFile = sessionFilePath(SID);
 const subagentsDir = path.join(tmpDir, SID, 'subagents');
@@ -85,20 +85,20 @@ describe('codex-emitter: 每线程独立轮次号与 delta-emit', () => {
     expect(users.length).toBe(4);
     expect(JSON.stringify(users[0].message.content)).toContain('<environment_context>');
     expect(users[1].message.content).toEqual([{ type: 'text', text: '请并行派发一个子代理整理资料' }]);
-    expect(users[1].x_cannbay.data.roundIndex).toBe(0);
-    expect(users[1].x_cannbay.data.kind).toBe('user');
+    expect(users[1].x_lake.data.roundIndex).toBe(0);
+    expect(users[1].x_lake.data.kind).toBe('user');
     const toolResults = users.filter((u) => Array.isArray(u.message.content) && u.message.content[0]?.type === 'tool_result');
     expect(toolResults.length).toBe(1);
     expect(toolResults[0].message.content[0].tool_use_id).toBe('call-spawn-1');
-    expect(toolResults[0].x_cannbay.data.roundIndex).toBe(2);
-    expect(toolResults[0].x_cannbay.data.kind).toBe('tool-result');
+    expect(toolResults[0].x_lake.data.roundIndex).toBe(2);
+    expect(toolResults[0].x_lake.data.kind).toBe('tool-result');
     // subagent_notification 事件注入保留（system turn 语义在 insight 侧落）
     const notification = users.find((u) => JSON.stringify(u.message.content).includes('<subagent_notification>'));
     expect(notification).toBeTruthy();
-    expect(notification!.x_cannbay.data.roundIndex).toBe(2);
+    expect(notification!.x_lake.data.roundIndex).toBe(2);
 
     const assistants = rows.filter((r) => r.type === 'assistant');
-    expect(assistants.map((a) => a.x_cannbay.data.roundIndex)).toEqual([0, 1, 2]);
+    expect(assistants.map((a) => a.x_lake.data.roundIndex)).toEqual([0, 1, 2]);
   });
 
   it('子代理：注入 + 任务文本 r0、exec tool_result r1、assistant r0/r1', () => {
@@ -107,13 +107,13 @@ describe('codex-emitter: 每线程独立轮次号与 delta-emit', () => {
     expect(users.length).toBe(3);
     expect(JSON.stringify(users[0].message.content)).toContain('<environment_context>');
     expect(users[1].message.content).toEqual([{ type: 'text', text: TASK_TEXT }]);
-    expect(users[1].x_cannbay.data.roundIndex).toBe(0);
+    expect(users[1].x_lake.data.roundIndex).toBe(0);
     const toolResult = users.find((u) => Array.isArray(u.message.content) && u.message.content[0]?.type === 'tool_result');
     expect(toolResult!.message.content[0].tool_use_id).toBe('call-exec-1');
-    expect(toolResult!.x_cannbay.data.roundIndex).toBe(1);
+    expect(toolResult!.x_lake.data.roundIndex).toBe(1);
 
     const assistants = rows.filter((r) => r.type === 'assistant');
-    expect(assistants.map((a) => a.x_cannbay.data.roundIndex)).toEqual([0, 1]);
+    expect(assistants.map((a) => a.x_lake.data.roundIndex)).toEqual([0, 1]);
     // spawn_agent tool_use 在主线程 r1 的 assistant 行里（泳道桥接信号）
     const mainRows = readJsonl(mainFile);
     const spawnAssistant = mainRows.filter((r) => r.type === 'assistant')[1];
@@ -137,14 +137,14 @@ describe('codex-emitter: 子代理 meta 派发关联', () => {
     expect(meta.toolUseId).toBe('call-spawn-1');
     expect(meta.name).toBe('Volta');
     expect(meta.agentId).toBe('0199aa11-bb22-cc33-dd44-ee55ff660000');
-    expect(meta.x_cannbay.schema).toBe('cc-subagent-meta');
-    expect(meta.x_cannbay.data.subagentSessionId).toBe(subId);
-    expect(meta.x_cannbay.data.nickname).toBe('Volta');
+    expect(meta.x_lake.schema).toBe('cc-subagent-meta');
+    expect(meta.x_lake.data.subagentSessionId).toBe(subId);
+    expect(meta.x_lake.data.nickname).toBe('Volta');
   });
 
   it('会话 meta 标记 framework=codex / protocol=responses', () => {
     const meta = JSON.parse(fs.readFileSync(sessionMetaPath(SID), 'utf-8'));
-    expect(meta.x_cannbay.data.framework).toBe('codex');
-    expect(meta.x_cannbay.data.protocol).toBe('responses');
+    expect(meta.x_lake.data.framework).toBe('codex');
+    expect(meta.x_lake.data.protocol).toBe('responses');
   });
 });

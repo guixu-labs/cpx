@@ -8,7 +8,7 @@
 
 // codex-emitter: convert a captured codex wire-record (ProxyRecord,
 // protocol='responses') into extended claude-format jsonl lines, so
-// cannbot-insight's existing claude-jsonl adapter can ingest it with zero
+// context-insight's existing claude-jsonl adapter can ingest it with zero
 // insight changes.
 //
 // Independent from claude-emitter / opencode-emitter — the three share NO
@@ -25,7 +25,7 @@
 //     messages never become timeline lines (static context, not events — same
 //     D1 semantics as the codex native adapter)
 //
-// Output format is the SAME extended claude-format + x_cannbay as the other
+// Output format is the SAME extended claude-format + x_lake as the other
 // two emitters, so the single claude-jsonl adapter consumes all three.
 //
 // ── Thread model ──────────────────────────────────────────────────────────
@@ -239,7 +239,7 @@ function systemPromptOf(body: ResponseRequestBody): string | undefined {
   return parts.length > 0 ? parts.join('\n\n') : undefined;
 }
 
-function convertInputItem(item: ResponseInputItem): { type: string; message: { role: string; content: string | AnthropicContentBlock[] }; source: string; x_lake: { schema: string; version: number; data: { roundIndex: number; kind: string } }; x_cannbay: { schema: string; version: number; data: { roundIndex: number; kind: string } } } | null {
+function convertInputItem(item: ResponseInputItem): { type: string; message: { role: string; content: string | AnthropicContentBlock[] }; source: string; x_lake: { schema: string; version: number; data: { roundIndex: number; kind: string } } } | null {
   if (item.type === 'message') {
     const role = item.role ?? 'user';
     if (role === 'assistant' || role === 'system' || role === 'developer') return null;
@@ -250,7 +250,7 @@ function convertInputItem(item: ResponseInputItem): { type: string; message: { r
       type: 'user',
       message: { role: 'user', content: content || '' },
       source: 'codex-proxy',
-      x_lake: xLake('cc-wire-input', { roundIndex: 0, kind: 'user' }), x_cannbay: xLake('cc-wire-input', { roundIndex: 0, kind: 'user' }),
+      x_lake: xLake('cc-wire-input', { roundIndex: 0, kind: 'user' }),
     };
   }
   if (item.type === 'function_call_output') {
@@ -261,14 +261,14 @@ function convertInputItem(item: ResponseInputItem): { type: string; message: { r
         content: [{ type: 'tool_result', tool_use_id: item.call_id ?? '', content: item.output ?? '' }],
       },
       source: 'codex-proxy',
-      x_lake: xLake('cc-wire-input', { roundIndex: 0, kind: 'tool-result' }), x_cannbay: xLake('cc-wire-input', { roundIndex: 0, kind: 'tool-result' }),
+      x_lake: xLake('cc-wire-input', { roundIndex: 0, kind: 'tool-result' }),
     };
   }
   return null;
 }
 
 // Subagent meta: same shape as claude-emitter's (toolUseId/name/agentType at
-// top level + cc-subagent-meta in x_lake/x_cannbay) so insight's
+// top level + cc-subagent-meta in x_lake) so insight's
 // listSubagentSessions reads both frameworks uniformly. codex extras
 // (agentId; nickname arrives late via the spawn output) are additive fields.
 // Rewritten when enrichment arrives — the first write may precede the
@@ -283,14 +283,6 @@ function writeSubMeta(sid: string, d: SubagentDispatch, task: string): void {
     agentId: d.agentId,
     nickname: d.nickname,
     x_lake: xLake('cc-subagent-meta', {
-      toolUseId: d.callId,
-      name,
-      agentType: null,
-      subagentSessionId: d.subId,
-      agentId: d.agentId,
-      nickname: d.nickname,
-    }),
-    x_cannbay: xLake('cc-subagent-meta', {
       toolUseId: d.callId,
       name,
       agentType: null,
@@ -380,11 +372,6 @@ export function emit(rec: ProxyRecord): void {
           framework: 'codex',
           protocol: 'responses',
           sid,
-        }), x_cannbay: xLake('cc-session-meta', {
-          producer: 'cpx',
-          framework: 'codex',
-          protocol: 'responses',
-          sid,
         }),
       });
     }
@@ -411,7 +398,6 @@ export function emit(rec: ProxyRecord): void {
     const line = convertInputItem(item);
     if (!line) return;
     (line.x_lake as { data: { roundIndex: number } }).data.roundIndex = ctx.roundIndex;
-    (line.x_cannbay as { data: { roundIndex: number } }).data.roundIndex = ctx.roundIndex;
     appendClaudeLine(targetFile, { ...line, timestamp: toISO(rec.receivedAt) });
   };
   const appendOnly = ctx.inputCursor === 0
@@ -453,16 +439,6 @@ export function emit(rec: ProxyRecord): void {
     tools: Array.isArray(body.tools) ? body.tools : undefined,
     source: proxySourceMarker(rec.protocol, rec.request.body),
     x_lake: xLake('cc-wire-round', {
-      roundIndex: ctx.roundIndex,
-      protocol: 'responses',
-      system: systemPrompt,
-      tools: Array.isArray(body.tools) ? body.tools : undefined,
-      requestParams: { model: body.model ?? rec.request.model },
-      latencyMs: rec.latencyMs,
-      ttftMs: rec.ttftMs ?? undefined,
-      stopReason: rec.response.stop_reason ?? undefined,
-      status: rec.response.status,
-    }), x_cannbay: xLake('cc-wire-round', {
       roundIndex: ctx.roundIndex,
       protocol: 'responses',
       system: systemPrompt,

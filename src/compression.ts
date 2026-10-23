@@ -40,9 +40,9 @@ function run7za(args: string[], maxBuffer = 1 << 28): Buffer {
   return r.stdout as Buffer;
 }
 
-/** 压缩级别：默认 9（最高比率）；CANNBOT_7Z_LEVEL 覆盖（退出压缩慢时可降 7 提速） */
+/** 压缩级别：默认 9（最高比率）；CONTEXT_7Z_LEVEL 覆盖（退出压缩慢时可降 7 提速） */
 function compressionLevel(): number {
-  const raw = Number(process.env.CANNBOT_7Z_LEVEL);
+  const raw = Number(process.env.CONTEXT_7Z_LEVEL);
   return Number.isInteger(raw) && raw >= 1 && raw <= 9 ? raw : 9;
 }
 

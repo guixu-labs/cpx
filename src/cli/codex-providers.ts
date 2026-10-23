@@ -127,7 +127,7 @@ export function codexProviderTable(): CodexProviderTable | null {
 // suffix ("/responses" for wire_api=responses, "/chat/completions" for
 // wire_api=chat) lands on the SAME logical path after the proxy strips the
 // /<providerId>/ prefix — the forwarded request is byte-identical to a
-// direct one. Upstream identity rides CANNBOT_PROXY_PROVIDER_UPSTREAMS (the
+// direct one. Upstream identity rides CONTEXT_PROXY_PROVIDER_UPSTREAMS (the
 // same map opencode uses), origin-only so the proxy re-appends the path.
 // Path-preserving tunnel base: keep the original base_url's path component
 // so the proxied URL is byte-compatible after prefix strip.

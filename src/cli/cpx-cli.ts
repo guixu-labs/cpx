@@ -31,7 +31,7 @@ const __dirname = path.dirname(__filename);
 const PROXY_PKG = path.resolve(__dirname, '..', '..');
 const PROXY_SERVER = path.join(PROXY_PKG, 'src', 'server.ts');
 const TSX_LOADER = resolveTsxLoader(__filename);
-const PROXY_DIR = process.env.CANNBOT_PROXY_DIR ?? path.join(os.homedir(), '.cannbot-insight', 'proxy');
+const PROXY_DIR = process.env.CONTEXT_PROXY_DIR ?? path.join(os.homedir(), '.context-insight', 'proxy');
 const CPX_CONFIG_FILE = path.join(path.dirname(PROXY_DIR), 'cpx-config.json');
 
 interface CpxConfig {
@@ -70,7 +70,7 @@ function runConfig(args: string[]): void {
   process.exit(2);
 }
 // 发现契约（env → 用户级端口登记 → 21025 兜底）：多人服务器上每人各自端口
-// 零配置对准自己的实例；IT 用 CANNBOT_CPX_INSIGHT_BASE 指 mock insight
+// 零配置对准自己的实例；IT 用 CONTEXT_CPX_INSIGHT_BASE 指 mock insight
 const INSIGHT_BASE = resolveInsightBase();
 
 const USAGE = `cpx ${VERSION_DISPLAY} — agent↔模型明文捕获代理编排器
@@ -91,7 +91,7 @@ cpx 保留参数（被 cpx 拦截消费，不透传 agent）：--agent 及若干
 在原有 claude / opencode 命令前加 cpx，其他使用完全无变化。捕获无需 insight：
 agent 退出后自动压缩归档；insight 在运行则自动导入并开浏览器，否则保留捕获
 （\`cpx list\` 查看，导入走 insight：Web UI「Import Session → JSONL」选
-\`~/.cannbot-insight/proxy/\` 目录）。安装：./proxy/install.sh（独立）或根
+\`~/.context-insight/proxy/\` 目录）。安装：./proxy/install.sh（独立）或根
 目录 ./start.sh（一体化，内部调用前者）。`;
 
 function log(msg: string): void { console.error(`[cpx-cli] ${msg}`); }
@@ -128,12 +128,12 @@ function startSessionProxy(sid: string, upstreams: ProxyUpstreams): Promise<Sess
         detached: true,
         env: {
           ...process.env,
-          CANNBOT_PROXY_PORT: '0',
-          CANNBOT_PROXY_SESSION_ID: sid,
-          CANNBOT_PROXY_ANTHROPIC_UPSTREAM: upstreams.anthropic.upstream,
-          CANNBOT_PROXY_OPENAI_UPSTREAM: upstreams.openai.upstream,
-          CANNBOT_PROXY_RESPONSES_UPSTREAM: upstreams.responses.upstream,
-          CANNBOT_PROXY_PROVIDER_UPSTREAMS: JSON.stringify(upstreams.providerUpstreams),
+          CONTEXT_PROXY_PORT: '0',
+          CONTEXT_PROXY_SESSION_ID: sid,
+          CONTEXT_PROXY_ANTHROPIC_UPSTREAM: upstreams.anthropic.upstream,
+          CONTEXT_PROXY_OPENAI_UPSTREAM: upstreams.openai.upstream,
+          CONTEXT_PROXY_RESPONSES_UPSTREAM: upstreams.responses.upstream,
+          CONTEXT_PROXY_PROVIDER_UPSTREAMS: JSON.stringify(upstreams.providerUpstreams),
         },
       });
     let port = 0;
@@ -150,9 +150,9 @@ function startSessionProxy(sid: string, upstreams: ProxyUpstreams): Promise<Sess
     });
     child.stderr?.on('data', (d: Buffer) => process.stderr.write(d));
     const timer = setTimeout(() => {
-      if (!port) reject(new Error('cannbot-proxy did not report a port within 30s'));
+      if (!port) reject(new Error('cpx proxy did not report a port within 30s'));
     }, 30000);
-    child.on('exit', () => { clearTimeout(timer); if (!port) reject(new Error('cannbot-proxy exited before reporting a port')); });
+    child.on('exit', () => { clearTimeout(timer); if (!port) reject(new Error('context-cpx exited before reporting a port')); });
   });
 }
 
@@ -255,15 +255,14 @@ function opencodeBinaryPath(): string | null {
 }
 
 // cannbot 内建 provider 的网关上游解析链（docs/CANNBOT-DESIGN.md §5.1）：
-//   ① 用户全局 config 的 provider.cannbot.options.baseURL（/connect 写入；
-//     私有化网关部署可自助改，cannbot/opencode 两个 config 根都尝试）
-//   ② 兜底 = 二进制代码常量（strings 双处验证，公网网关稳定 URL）
-const CANNBOT_GATEWAY_FALLBACK = 'https://cannbot.hicann.cn/gateway/compatible-mode/v1';
-
-function cannbotGatewayUpstream(): string {
+//   用户全局 config 的 provider.cannbot.options.baseURL（/connect 写入；
+//   私有化网关部署可自助改，cannbot/opencode 两个 config 根都尝试）。
+//   未配置 → null：不再内置公网默认网关（公共化决策——网关地址属于部署
+//   环境，不随包分发），调用方 fail-fast 并给出配置指引。
+function cannbotGatewayUpstream(): string | null {
   // 与自定义 provider 同一读取链（readCustomProvidersFromRoots：双根 +
-  // .json/.jsonc 双形态）——jsonc 注释不再直接 parse 失败走兜底
-  return collectOpencodeProviders().custom['cannbot'] ?? CANNBOT_GATEWAY_FALLBACK;
+  // .json/.jsonc 双形态）——jsonc 注释不再直接 parse 失败
+  return collectOpencodeProviders().custom['cannbot'] ?? null;
 }
 
 // Resolve each provider's real upstream baseURL by scanning the opencode
@@ -272,7 +271,7 @@ function cannbotGatewayUpstream(): string {
 // The api URL is the OpenAI-compatible base opencode would call WITHOUT the
 // proxy. This is READ from the user's own installed binary (not fabricated),
 // so cpx can forward to the correct upstream per provider — fully transparent,
-// no CANNBOT_PROXY_OPENAI_UPSTREAM env needed for known providers. Returns
+// no CONTEXT_PROXY_OPENAI_UPSTREAM env needed for known providers. Returns
 // {providerId: baseURL} for the requested ids that were found in the binary.
 // cannbot 的内建 cannbot provider 是代码常量、不在注册表形态里 → 二进制扫描
 // 必然 miss，改走 cannbotGatewayUpstream() 解析链。
@@ -283,7 +282,10 @@ function discoverProviderUpstreams(providerIds: string[]): Record<string, string
   const bin = opencodeBinaryPath();
   const custom = collectOpencodeProviders().custom;
   const out: Record<string, string> = {};
-  if (providerIds.includes('cannbot')) out['cannbot'] = cannbotGatewayUpstream();
+  if (providerIds.includes('cannbot')) {
+    const gateway = cannbotGatewayUpstream();
+    if (gateway) out['cannbot'] = gateway;
+  }
   if (bin && providerIds.length > 0) {
     // One `strings` pass (~1s for a 167MB binary); grep -o extracts every
     // provider block as its own line, then we pair id↔api per line.
@@ -443,7 +445,7 @@ function buildLaunch(profile: AgentProfile, proxyPort: number, claude: ClaudeAut
       // POST /<providerId>/chat/completions), so the prefix survives SDK URL
       // normalization and the proxy routes each request to that provider's real
       // upstream (discovered from the opencode binary). This is fully
-      // transparent — no CANNBOT_PROXY_OPENAI_UPSTREAM needed — and supports
+      // transparent — no CONTEXT_PROXY_OPENAI_UPSTREAM needed — and supports
       // multiple providers with different upstreams in one session.
       // Caller validates the list is non-empty before starting the proxy
       // (cannbot 恒非空：内建 cannbot 项保底).
@@ -512,7 +514,7 @@ function openBrowser(url: string): void {
   // agent）继承 VITEST env；显式 kill-switch 优先。PATH 桩方案对 WSL 的
   // cmd.exe 分支结构性无效（绝对路径 exec，PATH 拦不住——实测 autoupload
   // e2e 三场景真弹浏览器，2026-09-22）
-  if (process.env.CANNBOT_NO_BROWSER || process.env.VITEST) return;
+  if (process.env.CONTEXT_NO_BROWSER || process.env.VITEST) return;
   try {
     if (fs.existsSync('/proc/version') && fs.readFileSync('/proc/version', 'utf-8').toLowerCase().includes('microsoft')
         && fs.existsSync('/mnt/c/Windows/System32/cmd.exe')) {
@@ -572,7 +574,7 @@ async function runStatus(opts: { kill?: boolean; all?: boolean } = {}): Promise<
   const proxies = dedupePairs(findProxyProcs());
   const insightUp = await probeUrl(`${INSIGHT_BASE}/api/observe/data?pageSize=1`, 1500);
 
-  console.log(`cannbot-insight : ${insightUp ? `up   ${INSIGHT_BASE}` : 'down (capture runs without it; import via insight Web UI)'}`);
+  console.log(`context-insight : ${insightUp ? `up   ${INSIGHT_BASE}` : 'down (capture runs without it; import via insight Web UI)'}`);
   console.log(`proxy processes : ${proxies.length} running${proxies.length === 0 ? '  (none — proxy only lives during a cpx run)' : ''}`);
   for (const p of proxies) {
     const stale = isOrphanedProc(p, isAlive) ? '  [stale: orphaned (parent gone)]' : '';
@@ -678,7 +680,7 @@ function readSessionMetaFor(stem: string, sid: string): { framework: string | nu
   for (const c of candidates) {
     try {
       const xb0 = JSON.parse(fs.readFileSync(c, 'utf-8'));
-      const xb = xb0?.x_lake ?? xb0?.x_cannbay;
+      const xb = xb0?.x_lake;
       if (xb?.schema === 'cc-session-meta' && xb.data && typeof xb.data === 'object') {
         return {
           framework: typeof xb.data.framework === 'string' ? xb.data.framework : null,
@@ -818,7 +820,7 @@ async function main(): Promise<void> {
   // Discover each opencode provider's REAL upstream baseURL by scanning the
   // opencode binary (provider registry embeds api:"<url>"). Forwarded to the
   // proxy as a per-provider map so it routes /<providerId>/… to the right host —
-  // fully transparent, no CANNBOT_PROXY_OPENAI_UPSTREAM needed for known providers.
+  // fully transparent, no CONTEXT_PROXY_OPENAI_UPSTREAM needed for known providers.
   const opencodeProviderIds = profile === 'opencode' || profile === 'cannbot' ? resolveProviderIdsFor(profile, agentArgs) : [];
   // codex: tunnel every custom [model_providers.*] from ~/.codex/config.toml
   // to its real upstream (origin-only — the proxy re-appends the path). This
@@ -837,10 +839,20 @@ async function main(): Promise<void> {
     codexOpenaiBaseUrl: codexTable ? codexTable.openaiBaseUrl : null,
   });
 
+  // cannbot 网关 fail-fast：内建 cannbot provider 无上游（未配置
+  // provider.cannbot.options.baseURL）时继续启动只会静默直连零捕获，
+  // 在此给出明确配置指引后退出。
+  if (profile === 'cannbot' && !upstreams.providerUpstreams['cannbot']) {
+    console.error('cannbot 网关未配置：请在 cannbot 的全局配置里设置 provider.cannbot.options.baseURL');
+    console.error('  （~/.config/cannbot/opencode.json —— 通常由 cannbot /connect 或登录流程写入；');
+    console.error('    私有化网关部署请手工填写自己的网关地址）');
+    process.exit(1);
+  }
+
   const sid = randomUUID();
 
   // 启动期扫除泄漏占位（信号击杀/SIGKILL 残留的历史积压）：活运行以 proxy
-  // 进程的 CANNBOT_PROXY_SESSION_ID 判定，绝不误清进行中会话；/proc 不可用
+  // 进程的 CONTEXT_PROXY_SESSION_ID 判定，绝不误清进行中会话；/proc 不可用
   // （macOS）无法判定 liveness 时跳过（信号路径清理已由 handler 覆盖）
   if (fs.existsSync('/proc')) {
     try {
@@ -930,7 +942,7 @@ async function main(): Promise<void> {
     for (const id of ids) {
       const up = upstreams.providerUpstreams[id];
       if (up) log(`    ${id} → ${up}`);
-      else log(`    ${id} → (upstream not found in binary/models.dev cache/config; will use default ${upstreams.openai.upstream} — set CANNBOT_PROXY_OPENAI_UPSTREAM if wrong)`);
+      else log(`    ${id} → (upstream not found in binary/models.dev cache/config; will use default ${upstreams.openai.upstream} — set CONTEXT_PROXY_OPENAI_UPSTREAM if wrong)`);
     }
     log(`  2.x isolation: ${args.includes('--standalone')
       ? '--standalone 已注入（私有服务，OPENCODE_CONFIG_CONTENT 对发调进程生效）'
@@ -1015,7 +1027,7 @@ async function main(): Promise<void> {
       const metaPath = sessionMetaPath(sidRaw);
       if (!fs.existsSync(metaPath)) return;
       const meta = JSON.parse(fs.readFileSync(metaPath, 'utf-8'));
-      const xb = meta?.x_lake ?? meta?.x_cannbay;
+      const xb = meta?.x_lake;
       if (xb?.schema === 'cc-session-meta' && xb.data && xb.data.producer === 'cpx') {
         xb.data.governed = true;
         fs.writeFileSync(metaPath, JSON.stringify(meta, null, 2) + '\n');
@@ -1060,7 +1072,7 @@ async function main(): Promise<void> {
     log(`  importing: ${importPath}`);
     const result = await triggerIngest(captureSid, importPath);
     if (result) lastUrl = `${INSIGHT_BASE}/session/${captureSid}`;
-    else log('  ingest failed; you can import manually via the cannbot-insight UI');
+    else log('  ingest failed; you can import manually via the context-insight UI');
   }
   if (lastUrl) {
     log(`✅ imported → opening ${lastUrl}`);

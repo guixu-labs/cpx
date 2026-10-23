@@ -130,7 +130,7 @@ describe('字符串层：内容回显打码', () => {
 
 describe('redactRecord + 落盘数据流', () => {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cpx-redact-'));
-  process.env.CANNBOT_PROXY_DIR = tmpDir;
+  process.env.CONTEXT_PROXY_DIR = tmpDir;
   const sid = 'redact-flow-it-1';
   const mainFile = sessionFilePath(sid);
 

@@ -28,7 +28,7 @@ import { sessionFilePath } from '../../src/writer.ts';
 
 const FIXTURE = path.resolve(__dirname, 'data/cpx-codex-system.jsonl');
 const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cpx-codex-sys-'));
-process.env.CANNBOT_PROXY_DIR = tmpDir; // BEFORE sessionFilePath 评估（模块级懒读）
+process.env.CONTEXT_PROXY_DIR = tmpDir; // BEFORE sessionFilePath 评估（模块级懒读）
 
 const DEV_TEXT = 'You are a coding agent running in the Codex CLI, a terminal-based coding assistant. [SYS-DEV-BASE]';
 const INSTR_TEXT = '你是 instructions 形态的系统提示词 [SYS-INSTR]';
@@ -52,13 +52,13 @@ beforeAll(() => {
 });
 
 describe('codex-emitter: 系统提示词 wire 双形态捕获', () => {
-  it('developer 消息（0.161 真机形态）→ system 扩展字段，顶层与 x_cannbay 双轨一致', () => {
+  it('developer 消息（0.161 真机形态）→ system 扩展字段，顶层与 x_lake 双轨一致', () => {
     const [a] = assistantsOf('cpx-codex-sys-dev');
     expect(a.system).toBe(DEV_TEXT);
-    expect(a.x_cannbay.data.system).toBe(DEV_TEXT);
+    expect(a.x_lake.data.system).toBe(DEV_TEXT);
     // tools 同行落盘（readFullContext 的 foundExt 触发条件）
     expect(a.tools.map((t: any) => t.name)).toEqual(['exec_command']);
-    expect(a.x_cannbay.data.tools.map((t: any) => t.name)).toEqual(['exec_command']);
+    expect(a.x_lake.data.tools.map((t: any) => t.name)).toEqual(['exec_command']);
   });
 
   it('developer 消息不进时间线（静态上下文非事件，D1 语义）', () => {
@@ -73,12 +73,12 @@ describe('codex-emitter: 系统提示词 wire 双形态捕获', () => {
   it('instructions 字段存在时优先于 developer 派生', () => {
     const [a] = assistantsOf('cpx-codex-sys-instr');
     expect(a.system).toBe(INSTR_TEXT);
-    expect(a.x_cannbay.data.system).toBe(INSTR_TEXT);
+    expect(a.x_lake.data.system).toBe(INSTR_TEXT);
   });
 
   it('双缺省时不写 system 键（不产空串占位）', () => {
     const [a] = assistantsOf('cpx-codex-sys-none');
     expect('system' in a).toBe(false);
-    expect(a.x_cannbay.data.system).toBeUndefined();
+    expect(a.x_lake.data.system).toBeUndefined();
   });
 });

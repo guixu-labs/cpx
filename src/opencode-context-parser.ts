@@ -18,7 +18,7 @@
 // Design: capture ≠ interpret. The proxy is a pure verbatim capture layer; this
 // parser owns opencode-specific structural parsing. jsonl-driven: the jsonl is the
 // single source of truth and is re-parseable anytime with updated logic (the raw
-// `systemRaw` is always preserved). Independent of cannbot-insight (no insight
+// `systemRaw` is always preserved). Independent of context-insight (no insight
 // import/DB dependency) — a future merge would call parseOpencodeContext from an
 // opencode branch of readFullContext.
 

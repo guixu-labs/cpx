@@ -96,8 +96,8 @@ describe('SIGINT 端到端（真 wrapper，泄漏根因回归锁）', () => {
       const p = spawn('bash', [wrapper, agent], {
         env: {
           ...process.env,
-          CANNBOT_PROXY_DIR: path.join(runDir, 'proxy'),
-          CANNBOT_CPX_INSIGHT_BASE: 'http://127.0.0.1:1',
+          CONTEXT_PROXY_DIR: path.join(runDir, 'proxy'),
+          CONTEXT_CPX_INSIGHT_BASE: 'http://127.0.0.1:1',
         },
         stdio: 'ignore',
       });

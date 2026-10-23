@@ -85,7 +85,7 @@ describe('proxy/install.sh standalone installer', () => {
       const r = spawnSync(path.join(bindir, 'cpx'), ['status'], {
         encoding: 'utf-8',
         timeout: 60_000,
-        env: { ...process.env, CANNBOT_PROXY_DIR: tmpDir },
+        env: { ...process.env, CONTEXT_PROXY_DIR: tmpDir },
       });
       expect(r.status).toBe(0);
       expect(r.stdout).toContain('captures dir');

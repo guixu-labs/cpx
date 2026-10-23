@@ -20,7 +20,7 @@ import { sessionFilePath } from '../../src/writer.ts';
 
 const SID = 'sid-longest';
 const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cpx-longest-sig-'));
-process.env.CANNBOT_PROXY_DIR = tmpDir; // BEFORE sessionFilePath is evaluated at module scope
+process.env.CONTEXT_PROXY_DIR = tmpDir; // BEFORE sessionFilePath is evaluated at module scope
 sessionFilePath(SID); // warm the module-level dir capture
 const subagentsDir = path.join(tmpDir, SID, 'subagents');
 

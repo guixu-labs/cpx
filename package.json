@@ -1,8 +1,8 @@
 {
-  "name": "cannbot-proxy",
-  "version": "0.1.11",
+  "name": "context-cpx",
+  "version": "0.1.12",
   "type": "module",
-  "description": "Generic agent<->model plaintext capture proxy for CANNBot-Insight",
+  "description": "Generic agent<->model plaintext capture proxy for Context-Insight",
   "license": "SEE LICENSE IN LICENSE",
   "bin": {
     "cpx": "./bin/cpx.mjs"

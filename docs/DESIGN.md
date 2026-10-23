@@ -1,16 +1,16 @@
-# cannbot-proxy — Agent↔模型明文捕获代理
+# context-cpx — Agent↔模型明文捕获代理
 
 ## 1. 是什么
 
-一个类 claude-code-router 的**透传捕获代理**：拦截 agent（Claude Code / opencode / 任意 OpenAI 兼容客户端）与模型 API 的交互，**明文落盘**，再用 cannbot-insight 做 session 维度分析。
+一个类 claude-code-router 的**透传捕获代理**：拦截 agent（Claude Code / opencode / 任意 OpenAI 兼容客户端）与模型 API 的交互，**明文落盘**，再用 context-insight 做 session 维度分析。
 
-核心诉求：**易用**（一条命令拉起整套栈）、**明文留存**、**复用 cannbot-insight 现有分析面**（不重写分析侧）。
+核心诉求：**易用**（一条命令拉起整套栈）、**明文留存**、**复用 context-insight 现有分析面**（不重写分析侧）。
 
 **红线：任何 API key / 凭据永不落盘**（见 §7）。
 
 ## 2. 上下文图（内外部组件关系与职责）
 
-系统边界 = cpx-cli + cannbot-proxy + cannbot-insight。边界外（虚线黄）：人、agent 进程、真实模型 API、浏览器。边界内（蓝）：编排、透传捕获、明文存档、结构化分析。
+系统边界 = cpx-cli + context-cpx + context-insight。边界外（虚线黄）：人、agent 进程、真实模型 API、浏览器。边界内（蓝）：编排、透传捕获、明文存档、结构化分析。
 
 ```mermaid
 flowchart TB
@@ -19,12 +19,12 @@ flowchart TB
     Upstream["真实 upstream 模型 API<br/>dashscope / api.anthropic.com / api.openai.com"]
     Browser["浏览器<br/>localhost:21025/session/sid"]
 
-    subgraph SYS["系统边界：cpx-cli + cannbot-proxy + cannbot-insight"]
+    subgraph SYS["系统边界：cpx-cli + context-cpx + context-insight"]
         direction TB
         Cpx["cpx-cli 编排器<br/>起 proxy · 注入 base_url · 退出后压缩+normalize<br/>insight 在跑→导入+开浏览器"]
-        Proxy["cannbot-proxy (node:http, per-session)<br/>透传转发 · SSE 重组 · 明文落盘(redact 清洗)"]
-        Jsonl[("明文存档 JSONL<br/>~/.cannbot-insight/proxy/sid.jsonl<br/>扩展 claude-format 行<br/>+ 扩展 system/tools + subagents/")]
-        Insight["cannbot-insight（黑盒）<br/>读 jsonl → 结构化分析 → 10 tab + Full Context"]
+        Proxy["context-cpx (node:http, per-session)<br/>透传转发 · SSE 重组 · 明文落盘(redact 清洗)"]
+        Jsonl[("明文存档 JSONL<br/>~/.context-insight/proxy/sid.jsonl<br/>扩展 claude-format 行<br/>+ 扩展 system/tools + subagents/")]
+        Insight["context-insight（黑盒）<br/>读 jsonl → 结构化分析 → 10 tab + Full Context"]
     end
 
     User -->|"cpx-cli claude ...(shell)"| Cpx
@@ -54,12 +54,12 @@ flowchart TB
 | agent 子进程 | 外 | 发起 LLM 请求；stdio 直通用户；base_url 被 cpx-cli 指向 proxy |
 | 真实 upstream 模型 API | 外 | 推理；SSE/JSON 响应（dashscope / anthropic / openai） |
 | 浏览器 | 外 | 查看 `/session/<sid>` 10 tab 分析面（wireRounds/replay 默认隐藏） |
-| cpx-cli 编排器 | 内 | per-session spawn cannbot-proxy（env 钉死 sid）、注入 base_url、spawn agent；退出后压缩 + normalize（insight 在跑则导入 + 开浏览器，否则保留捕获，导入走 insight UI；`cpx list` 查看清单） |
-| cannbot-proxy (node:http) | 内 | 透传转发到 upstream、SSE 重组、明文落盘（落盘前 redact 清洗密钥、先写盘后响应）；非常驻，随 cpx-cli 生灭 |
-| 明文存档 JSONL | 内 | 扩展 claude-format（user/assistant 行 + 扩展 `system`/`tools` 字段；subagent 在 `subagents/<subId>.jsonl` + `.meta.json`）；一身二任（cannbot-insight 输入 + 明文存档） |
-| cannbot-insight（黑盒） | 内 | 读 JSONL → 结构化分析（8 Prisma 模型，零 schema 改；`Session.sourcePath` 反指 jsonl）→ 22 API + Web/TUI/CLI + 10 tab + Full Context（System/Tools/Memory/Skills/Messages） |
+| cpx-cli 编排器 | 内 | per-session spawn context-cpx（env 钉死 sid）、注入 base_url、spawn agent；退出后压缩 + normalize（insight 在跑则导入 + 开浏览器，否则保留捕获，导入走 insight UI；`cpx list` 查看清单） |
+| context-cpx (node:http) | 内 | 透传转发到 upstream、SSE 重组、明文落盘（落盘前 redact 清洗密钥、先写盘后响应）；非常驻，随 cpx-cli 生灭 |
+| 明文存档 JSONL | 内 | 扩展 claude-format（user/assistant 行 + 扩展 `system`/`tools` 字段；subagent 在 `subagents/<subId>.jsonl` + `.meta.json`）；一身二任（context-insight 输入 + 明文存档） |
+| context-insight（黑盒） | 内 | 读 JSONL → 结构化分析（8 Prisma 模型，零 schema 改；`Session.sourcePath` 反指 jsonl）→ 22 API + Web/TUI/CLI + 10 tab + Full Context（System/Tools/Memory/Skills/Messages） |
 
-**关键契约**：agent↔proxy↔upstream 走 HTTP（auth 透传、密钥清洗见 §7）；proxy→JSONL 走本地 `append`（先写盘后 `res.end`，防秒退竞态）；cpx-cli 退出后 JSONL 落成 norm/（insight 在跑则由其读入，否则待 insight UI 导入；`Session.sourcePath` 反指该文件）。明文（扩展 claude-format）不进 Prisma——JSONL 一身二任（cannbot-insight 输入 + 明文存档），符合 "Zero schema changes" 约束。
+**关键契约**：agent↔proxy↔upstream 走 HTTP（auth 透传、密钥清洗见 §7）；proxy→JSONL 走本地 `append`（先写盘后 `res.end`，防秒退竞态）；cpx-cli 退出后 JSONL 落成 norm/（insight 在跑则由其读入，否则待 insight UI 导入；`Session.sourcePath` 反指该文件）。明文（扩展 claude-format）不进 Prisma——JSONL 一身二任（context-insight 输入 + 明文存档），符合 "Zero schema changes" 约束。
 
 ## 3. 架构
 
@@ -79,7 +79,7 @@ flowchart TD
 
     Agent -->|"POST /v1/messages<br/>/v1/chat/completions<br/>base_url 指向 proxy"| Proxy
 
-    subgraph PROXY["cannbot-proxy（node:http · per-session）"]
+    subgraph PROXY["context-cpx（node:http · per-session）"]
         direction TB
         P1["① 透传转发到真实 upstream"]
         P2["② tee SSE 流 → 重组器<br/>→ 完整 response"]
@@ -90,9 +90,9 @@ flowchart TD
     Proxy -->|"转发请求"| Upstream["真实 upstream<br/>dashscope / api.anthropic.com / api.openai.com"]
     Upstream -->|"响应 (SSE/JSON)"| Proxy
     Proxy -->|"响应回写"| Agent
-    P3 -->|"append 每行一次 LLM 调用"| Capture[("~/.cannbot-insight/proxy/&lt;sid&gt;.jsonl<br/>扩展 claude-format 行 + 扩展 system/tools<br/>+ subagents/&lt;subId&gt;.jsonl + meta.json")]
+    P3 -->|"append 每行一次 LLM 调用"| Capture[("~/.context-insight/proxy/&lt;sid&gt;.jsonl<br/>扩展 claude-format 行 + 扩展 system/tools<br/>+ subagents/&lt;subId&gt;.jsonl + meta.json")]
 
-    A6 -.->|"读 jsonl"| Adapter["cannbot-insight ingest<br/>claude-jsonl adapter → RawInteraction[]"]
+    A6 -.->|"读 jsonl"| Adapter["context-insight ingest<br/>claude-jsonl adapter → RawInteraction[]"]
     Capture -.->|"读取"| Adapter
     Adapter -->|"importSession() pipeline<br/>零 schema 改"| DB[("prisma/dev.db<br/>Session/Turn/ToolCall … 8 模型")]
     Adapter --> Browser["浏览器<br/>localhost:21025/session/&lt;sid&gt; · 10 tab 分析"]
@@ -101,7 +101,7 @@ flowchart TD
     class CPX,PROXY sub
 ```
 
-**三层职责**：cpx-cli 编排（拉起捕获栈）／cannbot-proxy 透传捕获（明文落盘）／cannbot-insight 分析（现有，零改动；导入是其自身职责）。agent↔proxy↔upstream 走 HTTP，proxy↔jsonl 走本地文件；捕获全程不依赖 insight——insight 在跑则 cpx-cli 退出时读入 jsonl，否则保留捕获待 insight UI 导入。
+**三层职责**：cpx-cli 编排（拉起捕获栈）／context-cpx 透传捕获（明文落盘）／context-insight 分析（现有，零改动；导入是其自身职责）。agent↔proxy↔upstream 走 HTTP，proxy↔jsonl 走本地文件；捕获全程不依赖 insight——insight 在跑则 cpx-cli 退出时读入 jsonl，否则保留捕获待 insight UI 导入。
 
 ## 4. 使用方式
 
@@ -120,7 +120,7 @@ cpx -- aichat "..."                # 任意 OpenAI 兼容客户端
 cpx list                           # 全部捕获会话：sid/大小/框架/子代理数/压缩状态
 
 # 导入（insight 自身职责，无 cpx 子命令）：
-#   · insight Web UI「Import Session → JSONL」选 ~/.cannbot-insight/proxy/ 目录（支持扫描）
+#   · insight Web UI「Import Session → JSONL」选 ~/.context-insight/proxy/ 目录（支持扫描）
 #   · insight 在运行时，捕获退出即自动导入并开浏览器（cpx 退出路径机会式触发）
 
 # 状态与配置：
@@ -135,7 +135,7 @@ cpx config dedup off              # 关闭
 - 只压缩**捕获记录**，不改动转发给上游的请求——模型永远看到完整注册表，零功能风险
 - 内容有变化的清单照常全文记录（刷新语义不受损）；普通消息 / tool_result 永不压缩
 - 主 agent 与各 subagent 的上下文**各自独立判重**（同一段注册表在两个上下文里各留一份全文）
-- `cpx status` 显示每个捕获文件的 `dedup ×N 压缩率`；配置存于 `~/.cannbot-insight/cpx-config.json`，**热生效**（每次 emit 时读取，`cpx config dedup on/off` 立即作用于进行中的会话，无需重启）
+- `cpx status` 显示每个捕获文件的 `dedup ×N 压缩率`；配置存于 `~/.context-insight/cpx-config.json`，**热生效**（每次 emit 时读取，`cpx config dedup on/off` 立即作用于进行中的会话，无需重启）
 
 > `proxy/install.sh` 把 `cpx` 以 **symlink** 落到 PATH（`ln -sfn` 不跟随旧软链，绝无 `cat >` 时代覆写仓内文件的风险），指向仓内 `proxy/cpx-cli` wrapper；该 wrapper cwd 无关、自解析位置、**优先用 `proxy/node_modules/.bin/tsx`**（独立安装即可用），回退根 node_modules / `npx`。不想全局装也可直接 `./proxy/cpx-cli claude ...`。命令名 `cpx`，编排器模块文件仍是 `cpx-cli.ts`/wrapper `cpx-cli`。
 
@@ -143,8 +143,8 @@ cpx config dedup off              # 关闭
 **启动时打印**：session id、profile、真实 upstream、proxy 端口、**捕获文件路径 + `tail -f` 命令**。
 
 **数据落点**：
-- 明文存档：`~/.cannbot-insight/proxy/<sid>.jsonl`（**扩展 claude-format**：每行 user/assistant + 扩展 `system`/`tools` 字段；subagent 在 `<sid>/subagents/<subId>.jsonl` + `.meta.json`）
-- 结构化分析：cannbot-insight 的 `prisma/dev.db`（Session/Turn/ToolCall…），cpx 用 `source:'claude-jsonl'` 导入复用现成 claude-jsonl adapter，`Session.sourcePath` 指回主 jsonl
+- 明文存档：`~/.context-insight/proxy/<sid>.jsonl`（**扩展 claude-format**：每行 user/assistant + 扩展 `system`/`tools` 字段；subagent 在 `<sid>/subagents/<subId>.jsonl` + `.meta.json`）
+- 结构化分析：context-insight 的 `prisma/dev.db`（Session/Turn/ToolCall…），cpx 用 `source:'claude-jsonl'` 导入复用现成 claude-jsonl adapter，`Session.sourcePath` 指回主 jsonl
 - 浏览器：`http://localhost:21025/session/<sid>`
 
 **不影响平时用 agent**：override 只活在 cpx-cli 起的那个进程里，退出即净，不碰 `~/.claude/` 配置。
@@ -162,7 +162,7 @@ cpx config dedup off              # 关闭
 | claude-emitter（wire-record → 扩展 claude 行；delta emit 新 user 消息含 tool_result；subagent 按 `cc_is_subagent` + task-prompt 哈希路由到 `subagents/<subId>.jsonl` + meta.json 带 toolUseId） | `proxy/src/claude-emitter.ts` | ✅ IT |
 | cpx-cli 编排 CLI（起 proxy+agent；退出后压缩+normalize，insight 在跑则导入+开浏览器；`cpx list` 捕获清单） | `proxy/src/cli/cpx-cli.ts` | ✅ |
 | `cpx` 全局命令（独立安装器 `proxy/install.sh`，根 `start.sh` 委托调用；任意目录裸用，捕获无需 insight） | `proxy/install.sh` + `proxy/cpx-cli` wrapper + `package.json` bin | ✅ IT（cpx-install.test.ts） |
-| subagent 切分（proxy emitter 路由 subagents/ + meta.json，**复用 cannbot-insight claude-jsonl adapter 原生 subagent 流程**，core pipeline 不改） | `proxy/src/claude-emitter.ts` + `src/lib/ingest/adapters/claude-jsonl.ts` | ✅ IT |
+| subagent 切分（proxy emitter 路由 subagents/ + meta.json，**复用 context-insight claude-jsonl adapter 原生 subagent 流程**，core pipeline 不改） | `proxy/src/claude-emitter.ts` + `src/lib/ingest/adapters/claude-jsonl.ts` | ✅ IT |
 | Full Context（System/Tools 从扩展字段、Memory/Skills 扫 message；claude-jsonl readFullContext + turns route 放宽到 claude-code framework） | `src/lib/ingest/adapters/claude-jsonl.ts` + `turns/[turnId]/route.ts` | ✅ IT |
 | 真实 system prompt 落成 system turn（不再 hidden 残差） | adapter | ✅ |
 | tool_result 回填到对应 tool_use | adapter | ✅ |

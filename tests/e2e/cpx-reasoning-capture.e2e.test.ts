@@ -94,12 +94,12 @@ function runCpx(): Promise<{ code: number; output: string }> {
     const p = spawn('bash', [WRAPPER, AGENT], {
       env: {
         ...process.env,
-        CANNBOT_PROXY_DIR: CAPTURES,
-        CANNBOT_PROXY_OPENAI_UPSTREAM: upstream,
+        CONTEXT_PROXY_DIR: CAPTURES,
+        CONTEXT_PROXY_OPENAI_UPSTREAM: upstream,
         // 钉死不可达：不机会主义导入开发机在跑的真 insight、不开浏览器
-        CANNBOT_CPX_INSIGHT_BASE: 'http://127.0.0.1:1',
+        CONTEXT_CPX_INSIGHT_BASE: 'http://127.0.0.1:1',
         // belt+braces：openBrowser 熔断守卫（browser-guard.test.ts 源级锁消费本行）
-        CANNBOT_NO_BROWSER: '1',
+        CONTEXT_NO_BROWSER: '1',
         HOME: TMP,
       },
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -141,9 +141,9 @@ describe('cpx DeepSeek 思考流捕获 E2E（reasoning_content → thinking 块�
     // usage：openai 网关计费字段全量映射（含思考 token）
     expect(asst.message.usage).toMatchObject({ input_tokens: 11, output_tokens: 6, cache_read_input_tokens: 2, reasoning_tokens: 4 });
     // 声明式通道：insight claude-jsonl 既有 reasoningTokens 读取
-    expect(asst.x_cannbay.schema).toBe('cc-wire-round');
-    expect(asst.x_cannbay.version).toBe(1);
-    expect(asst.x_cannbay.data.reasoningTokens).toBe(4);
+    expect(asst.x_lake.schema).toBe('cc-wire-round');
+    expect(asst.x_lake.version).toBe(1);
+    expect(asst.x_lake.data.reasoningTokens).toBe(4);
     // 思考首 token 即计时起点（ttftMs 存在而非 null）
     expect(typeof asst.ttftMs).toBe('number');
   }, 120_000);

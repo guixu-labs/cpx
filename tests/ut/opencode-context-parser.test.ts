@@ -23,7 +23,7 @@ import { parseOpencodeContext, parseOpencodeSystem } from '../../src/opencode-co
 const SID = 'sid-main';
 const FIXTURE = path.resolve(__dirname, 'data/opencode-wire-records.jsonl');
 const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cpx-ctx-'));
-process.env.CANNBOT_PROXY_DIR = tmpDir; // BEFORE sessionFilePath is evaluated at module scope
+process.env.CONTEXT_PROXY_DIR = tmpDir; // BEFORE sessionFilePath is evaluated at module scope
 const mainFile = sessionFilePath(SID); // cpx- prefixed
 
 beforeAll(() => {

@@ -55,7 +55,7 @@ function readListenPorts(): Map<number, number> {
   return m;
 }
 
-// 活运行判定（启动期清扫的生命线）：以 env 标记 CANNBOT_PROXY_SESSION_ID 为
+// 活运行判定（启动期清扫的生命线）：以 env 标记 CONTEXT_PROXY_SESSION_ID 为
 // 准——该变量仅由 startSessionProxy 注入 proxy 进程树，与安装布局零耦合。
 // 旧实现按 cmdline 匹配 'proxy/src/server.ts'（老仓库布局的残留），新
 // monorepo（packages/cpx/src/server.ts）与 npm 件（context-cpx/src/
@@ -76,7 +76,7 @@ export function findProxyProcs(): ProxyProc[] {
   const out: ProxyProc[] = [];
   for (const pid of pids) {
     const env = parseEnviron(readProcFile(pid, 'environ') ?? '');
-    if (!env.CANNBOT_PROXY_SESSION_ID) continue;
+    if (!env.CONTEXT_PROXY_SESSION_ID) continue;
     const cmd = readProcFile(pid, 'cmdline');
     if (!cmd || !cmd.replace(/\0/g, ' ').includes('server.ts')) continue;
     let ppid: number | null = null; let ageSec: number | null = null;
@@ -89,8 +89,8 @@ export function findProxyProcs(): ProxyProc[] {
     }
     out.push({
       pid, ppid,
-      sid: env.CANNBOT_PROXY_SESSION_ID ?? null,
-      upstream: env.CANNBOT_PROXY_ANTHROPIC_UPSTREAM ?? null,
+      sid: env.CONTEXT_PROXY_SESSION_ID ?? null,
+      upstream: env.CONTEXT_PROXY_ANTHROPIC_UPSTREAM ?? null,
       ageSec, port: portMap.get(pid) ?? null,
     });
   }

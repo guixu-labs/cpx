@@ -2,6 +2,15 @@
 
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 
+## [v0.1.12] - 2026-10-22
+
+> 更名说明：npm 包主体自本版起为 `context-cpx`（命令仍为 `cpx`，捕获目录 `~/.context-insight/proxy/`）；`cannbot-proxy` 转为同内容变体包。捕获格式契约与 insight ≥ v0.2.41 配套。
+
+### Changed
+- 【品牌主体更名】环境变量前缀 `CANNBOT_*` → `CONTEXT_*`（变体包保持旧前缀）；数据目录随 insight 迁移至 `~/.context-insight/`
+- 【wire 扩展信封单轨】扩展信封键 `x_cannbay` 更名为 `x_lake`，仅写新键；旧键捕获由新版 insight 按无扩展导入
+- 【文档更新】README 与设计文档按新品牌与现行为全面更新
+
 ## [v0.1.11] - 2026-10-21
 
 > 对齐说明：npm v0.1.10 为 0.2.38 撤回重发的换号版，未含 v0.1.9 的 codex 捕获修复；本版起 npm 产物与 git master 对齐。

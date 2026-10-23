@@ -8,7 +8,7 @@
 
 // openBrowser 测试环境熔断回归锁（历史事故：全量 e2e 真弹浏览器空页——旧
 // PATH 桩对 WSL 的 cmd.exe 绝对路径分支结构性无效）。守卫必须存在且先于
-// 任何 spawn 分支；e2e 同时显式设 CANNBOT_NO_BROWSER（belt+braces）。
+// 任何 spawn 分支；e2e 同时显式设 CONTEXT_NO_BROWSER（belt+braces）。
 import { describe, it, expect } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -19,14 +19,14 @@ const cliSrc = fs.readFileSync(path.join(ROOT, 'src/cli/cpx-cli.ts'), 'utf8');
 const e2eSrc = fs.readFileSync(path.join(ROOT, 'tests/e2e/cpx-reasoning-capture.e2e.test.ts'), 'utf8');
 
 describe('openBrowser 测试环境熔断（防弹窗回归锁）', () => {
-  it('openBrowser 首行守卫：CANNBOT_NO_BROWSER / VITEST 任一即 return（先于 cmd.exe/xdg-open 分支）', () => {
+  it('openBrowser 首行守卫：CONTEXT_NO_BROWSER / VITEST 任一即 return（先于 cmd.exe/xdg-open 分支）', () => {
     const fn = cliSrc.slice(cliSrc.indexOf('function openBrowser('), cliSrc.indexOf('function openBrowser(') + 800);
-    expect(fn).toContain("if (process.env.CANNBOT_NO_BROWSER || process.env.VITEST) return;");
+    expect(fn).toContain("if (process.env.CONTEXT_NO_BROWSER || process.env.VITEST) return;");
     // 守卫必须在任何 spawn 之前（cmd.exe 绝对路径分支是 PATH 桩拦不住的）
-    expect(fn.indexOf('CANNBOT_NO_BROWSER')).toBeLessThan(fn.indexOf('spawnSync'));
+    expect(fn.indexOf('CONTEXT_NO_BROWSER')).toBeLessThan(fn.indexOf('spawnSync'));
   });
 
-  it('reasoning-capture e2e 显式设 CANNBOT_NO_BROWSER（belt+braces）', () => {
-    expect(e2eSrc).toContain("CANNBOT_NO_BROWSER: '1'");
+  it('reasoning-capture e2e 显式设 CONTEXT_NO_BROWSER（belt+braces）', () => {
+    expect(e2eSrc).toContain("CONTEXT_NO_BROWSER: '1'");
   });
 });

@@ -22,7 +22,7 @@ import { sessionFilePath, sessionMetaPath } from '../../src/writer.ts';
 const CB_SID = 'ses_cannbot_it_main';
 const OC_SID = 'ses_opencode_regression';
 const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cpx-cannbot-'));
-process.env.CANNBOT_PROXY_DIR = tmpDir; // BEFORE sessionFilePath is evaluated at module scope
+process.env.CONTEXT_PROXY_DIR = tmpDir; // BEFORE sessionFilePath is evaluated at module scope
 
 function record(sid: string, userAgent: string | null): object {
   return {
@@ -65,7 +65,7 @@ interface EmittedRow {
   version?: string;
   system?: string;
   tools?: Array<{ name: string; description?: string }>;
-  x_cannbay?: { schema: string; data: Record<string, unknown> };
+  x_lake?: { schema: string; data: Record<string, unknown> };
   [k: string]: unknown;
 }
 
@@ -78,7 +78,7 @@ describe('opencode-emitter × cannbot（UA 驱动框架标识分流）', () => {
   it('meta：UA cannbot/* → cc-session-meta.framework=cannbot + ccVersion，protocol 仍为 openai', () => {
     const metaPath = sessionMetaPath(CB_SID);
     expect(fs.existsSync(metaPath)).toBe(true);
-    const xb = JSON.parse(fs.readFileSync(metaPath, 'utf-8')).x_cannbay;
+    const xb = JSON.parse(fs.readFileSync(metaPath, 'utf-8')).x_lake;
     expect(xb.schema).toBe('cc-session-meta');
     expect(xb.data.producer).toBe('cpx');
     expect(xb.data.framework).toBe('cannbot');
@@ -86,21 +86,21 @@ describe('opencode-emitter × cannbot（UA 驱动框架标识分流）', () => {
     expect(xb.data.protocol).toBe('openai'); // 协议≠框架（spec §4.1 语义是线路协议）
   });
 
-  it('行级：source=cannbot-proxy（legacy 双轨）+ x_cannbay 声明齐全 + 顶层 version=cannbot 版本', () => {
+  it('行级：source=cannbot-proxy（legacy 双轨）+ x_lake 声明齐全 + 顶层 version=cannbot 版本', () => {
     const rows = readJsonl(sessionFilePath(CB_SID));
     expect(rows.length).toBeGreaterThan(0);
     expect(rows.every(r => r.source === 'cannbot-proxy')).toBe(true);
     const asst = rows.find(r => r.type === 'assistant');
     expect(asst.version).toBe('1.1.2');
-    expect(asst.x_cannbay.schema).toBe('cc-wire-round');
-    expect(asst.x_cannbay.data.protocol).toBe('openai');
-    expect(asst.x_cannbay.data.requestParams.model).toBe('glm-5.2');
+    expect(asst.x_lake.schema).toBe('cc-wire-round');
+    expect(asst.x_lake.data.protocol).toBe('openai');
+    expect(asst.x_lake.data.requestParams.model).toBe('glm-5.2');
   });
 
   it('回归锁：UA opencode/* 路径逐字节不变（framework=opencode、source=opencode-proxy、无 ccVersion）', () => {
     const metaPath = sessionMetaPath(OC_SID);
     expect(fs.existsSync(metaPath)).toBe(true);
-    const xb = JSON.parse(fs.readFileSync(metaPath, 'utf-8')).x_cannbay;
+    const xb = JSON.parse(fs.readFileSync(metaPath, 'utf-8')).x_lake;
     expect(xb.data.framework).toBe('opencode');
     expect(xb.data.ccVersion).toBeUndefined();
     const rows = readJsonl(sessionFilePath(OC_SID));

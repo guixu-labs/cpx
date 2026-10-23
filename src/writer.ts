@@ -15,13 +15,32 @@ import {
   readCaptureText as readArchivedText,
 } from './compression';
 
-export const PROXY_DIR = process.env.CANNBOT_PROXY_DIR
-  ?? path.join(os.homedir(), '.cannbot-insight', 'proxy');
+// 数据目录迁移：cannbot 时代（≤0.1.11）的 ~/.cannbot-insight 首启原子改名到
+// ~/.context-insight（与 insight 侧启动器同款幂等逻辑；显式 CONTEXT_PROXY_DIR
+// 覆盖 = 用户自管，不掺和；两目录并存沿用新目录不动旧目录）。
+function migrateLegacyDataRoot(): void {
+  if (process.env.CONTEXT_PROXY_DIR) return;
+  const home = os.homedir();
+  const legacy = path.join(home, '.cannbot-insight');
+  const next = path.join(home, '.context-insight');
+  try {
+    // 等路径 = cannbot 品牌变体（pack-cannbot 打包期翻转了新目录字面量）——迁移无意义
+    if (legacy === next || !fs.existsSync(legacy) || fs.existsSync(next)) return;
+    fs.renameSync(legacy, next);
+    console.error(`[cpx] 数据目录已迁移: ${legacy} → ${next}`);
+  } catch {
+    // 迁移失败（并发/权限）不阻断捕获：继续使用新目录
+  }
+}
+migrateLegacyDataRoot();
 
-// Lazy read of the proxy dir so tests can redirect via CANNBOT_PROXY_DIR after
+export const PROXY_DIR = process.env.CONTEXT_PROXY_DIR
+  ?? path.join(os.homedir(), '.context-insight', 'proxy');
+
+// Lazy read of the proxy dir so tests can redirect via CONTEXT_PROXY_DIR after
 // module load (the const above is captured at server-startup time only).
 function dir(): string {
-  return process.env.CANNBOT_PROXY_DIR ?? PROXY_DIR;
+  return process.env.CONTEXT_PROXY_DIR ?? PROXY_DIR;
 }
 
 // Top-level capture files carry a cpx- prefix: the stem is claude's REAL
@@ -57,7 +76,7 @@ export function appendSid(pinnedSid: string, sid: string): void {
 }
 
 // Subagent capture files live under <PROXY_DIR>/<sid>/subagents/<subId>.jsonl
-// (claude's convention, read by cannbot-insight's listSubagentSessions).
+// (claude's convention, read by context-insight's listSubagentSessions).
 export function subagentFilePath(sid: string, subId: string): string {
   return path.join(dir(), sid, 'subagents', `${subId}.jsonl`);
 }

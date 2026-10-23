@@ -18,12 +18,12 @@ import os from 'node:os';
 import path from 'node:path';
 import { resolveInsightBase, DEFAULT_INSIGHT_PORT } from '../../src/cli/insight-discovery';
 
-const ENV_KEYS = ['HOME', 'CANNBOT_CPX_INSIGHT_BASE', 'CANNBOT_PROXY_DIR', 'CANNBOT_INSIGHT_HOME'] as const;
+const ENV_KEYS = ['HOME', 'CONTEXT_CPX_INSIGHT_BASE', 'CONTEXT_PROXY_DIR', 'CONTEXT_INSIGHT_HOME'] as const;
 const SAVED: Record<string, string | undefined> = {};
 let home: string;
 
 function writeRegistry(content: string): void {
-  const dir = path.join(home, '.cannbot-insight');
+  const dir = path.join(home, '.context-insight');
   fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(path.join(dir, 'insight-port'), content);
 }
@@ -34,9 +34,9 @@ beforeEach(() => {
   }
   home = fs.mkdtempSync(path.join(os.tmpdir(), 'cpx-insight-discovery-'));
   process.env.HOME = home;
-  delete process.env.CANNBOT_CPX_INSIGHT_BASE;
-  delete process.env.CANNBOT_PROXY_DIR;
-  delete process.env.CANNBOT_INSIGHT_HOME;
+  delete process.env.CONTEXT_CPX_INSIGHT_BASE;
+  delete process.env.CONTEXT_PROXY_DIR;
+  delete process.env.CONTEXT_INSIGHT_HOME;
 });
 
 afterEach(() => {
@@ -50,7 +50,7 @@ afterEach(() => {
 describe('resolveInsightBase 发现契约', () => {
   it('env 显式指定最高优先（登记文件存在也不生效）', () => {
     writeRegistry('29999\n');
-    process.env.CANNBOT_CPX_INSIGHT_BASE = 'http://127.0.0.1:9999';
+    process.env.CONTEXT_CPX_INSIGHT_BASE = 'http://127.0.0.1:9999';
     expect(resolveInsightBase()).toBe('http://127.0.0.1:9999');
   });
 
@@ -59,31 +59,31 @@ describe('resolveInsightBase 发现契约', () => {
     expect(resolveInsightBase()).toBe('http://localhost:21226');
   });
 
-  it('登记目录锚定 CANNBOT_PROXY_DIR（与其父目录同源）', () => {
+  it('登记目录锚定 CONTEXT_PROXY_DIR（与其父目录同源）', () => {
     const custom = path.join(home, 'custom-capture-root', 'proxy');
     fs.mkdirSync(custom, { recursive: true });
     fs.writeFileSync(path.join(path.dirname(custom), 'insight-port'), '23000\n');
-    process.env.CANNBOT_PROXY_DIR = custom;
+    process.env.CONTEXT_PROXY_DIR = custom;
     expect(resolveInsightBase()).toBe('http://localhost:23000');
   });
 
-  it('登记目录跟随 CANNBOT_INSIGHT_HOME（无 CANNBOT_PROXY_DIR 时）', () => {
+  it('登记目录跟随 CONTEXT_INSIGHT_HOME（无 CONTEXT_PROXY_DIR 时）', () => {
     const dataDir = path.join(home, 'relocated-data');
     fs.mkdirSync(dataDir, { recursive: true });
     fs.writeFileSync(path.join(dataDir, 'insight-port'), '24000\n');
-    process.env.CANNBOT_INSIGHT_HOME = dataDir;
+    process.env.CONTEXT_INSIGHT_HOME = dataDir;
     expect(resolveInsightBase()).toBe('http://localhost:24000');
   });
 
-  it('CANNBOT_PROXY_DIR 优先于 CANNBOT_INSIGHT_HOME', () => {
+  it('CONTEXT_PROXY_DIR 优先于 CONTEXT_INSIGHT_HOME', () => {
     const dataDir = path.join(home, 'relocated-data');
     fs.mkdirSync(dataDir, { recursive: true });
     fs.writeFileSync(path.join(dataDir, 'insight-port'), '24000\n');
-    process.env.CANNBOT_INSIGHT_HOME = dataDir;
+    process.env.CONTEXT_INSIGHT_HOME = dataDir;
     const custom = path.join(home, 'custom-capture-root', 'proxy');
     fs.mkdirSync(custom, { recursive: true });
     fs.writeFileSync(path.join(path.dirname(custom), 'insight-port'), '23000\n');
-    process.env.CANNBOT_PROXY_DIR = custom;
+    process.env.CONTEXT_PROXY_DIR = custom;
     expect(resolveInsightBase()).toBe('http://localhost:23000');
   });
 

@@ -28,7 +28,7 @@ const VALUE_FLAGS = new Set(['--agent']);
 
 /** 捕获目录（补全引擎展示/静态词表用）。 */
 function captureDir(): string {
-  return process.env.CANNBOT_PROXY_DIR ?? path.join(os.homedir(), '.cannbot-insight', 'proxy');
+  return process.env.CONTEXT_PROXY_DIR ?? path.join(os.homedir(), '.context-insight', 'proxy');
 }
 
 function filterByPrefix(cands: string[], cur: string): string[] {

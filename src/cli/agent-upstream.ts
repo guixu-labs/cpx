@@ -17,7 +17,7 @@
 //     .claude/settings.local.json > .claude/settings.json(project)
 //     > ~/.claude/settings.json(user) > 进程 env > 官方默认
 //   （settings 的 env 段覆盖同名 shell 变量——进程 env 是最低层）
-// - dsh：CANNBOT 旋钮 > 进程 env DEEPSEEK_BASE_URL > 官方默认。
+// - dsh：CONTEXT 旋钮 > 进程 env DEEPSEEK_BASE_URL > 官方默认。
 //   cordis.patch.yml 显式 baseURL 优先于 env 但路径不可知，不镜像
 //   （运行时已有警告，属已知限制）
 // - openai/generic（opencode 未发现 provider 时同链兜底）：
@@ -29,7 +29,7 @@
 //   时剥尾部 /v1（codex 向 base 追加 /responses，proxy 侧请求路径已含
 //   /v1，不剥会拼出 /v1/v1/responses）
 //
-// cpx 级旋钮（CANNBOT_PROXY_*_UPSTREAM）置顶：有意打破镜像的手动控制面。
+// cpx 级旋钮（CONTEXT_PROXY_*_UPSTREAM）置顶：有意打破镜像的手动控制面。
 // claude 的 managed-settings 企业层/Bedrock/Vertex 模式不镜像（前者还会
 // 击穿 --settings 注入使捕获失效，另一类问题）。
 //
@@ -124,8 +124,8 @@ function pickTier(tiers: ClaudeTier[], key: string): { value: string; source: st
 }
 
 function resolveClaudeUpstream(env: NodeJS.ProcessEnv, tiers: ClaudeTier[]): UpstreamResolution {
-  const knob = pickEnv(env, 'CANNBOT_PROXY_ANTHROPIC_UPSTREAM');
-  if (knob) return { upstream: knob, source: 'CANNBOT_PROXY_ANTHROPIC_UPSTREAM override' };
+  const knob = pickEnv(env, 'CONTEXT_PROXY_ANTHROPIC_UPSTREAM');
+  if (knob) return { upstream: knob, source: 'CONTEXT_PROXY_ANTHROPIC_UPSTREAM override' };
   const tier = pickTier(tiers, 'ANTHROPIC_BASE_URL');
   if (tier) return { upstream: tier.value, source: tier.source };
   const fromEnv = pickEnv(env, 'ANTHROPIC_BASE_URL');
@@ -134,24 +134,24 @@ function resolveClaudeUpstream(env: NodeJS.ProcessEnv, tiers: ClaudeTier[]): Ups
 }
 
 function resolveDshUpstream(env: NodeJS.ProcessEnv): UpstreamResolution {
-  const knob = pickEnv(env, 'CANNBOT_PROXY_ANTHROPIC_UPSTREAM');
-  if (knob) return { upstream: knob, source: 'CANNBOT_PROXY_ANTHROPIC_UPSTREAM override' };
+  const knob = pickEnv(env, 'CONTEXT_PROXY_ANTHROPIC_UPSTREAM');
+  if (knob) return { upstream: knob, source: 'CONTEXT_PROXY_ANTHROPIC_UPSTREAM override' };
   const fromEnv = pickEnv(env, 'DEEPSEEK_BASE_URL');
   if (fromEnv) return { upstream: fromEnv, source: 'process env DEEPSEEK_BASE_URL' };
   return { upstream: DEEPSEEK_OFFICIAL, source: 'default (api.deepseek.com/anthropic)' };
 }
 
 function resolveOpenaiUpstream(env: NodeJS.ProcessEnv): UpstreamResolution {
-  const knob = pickEnv(env, 'CANNBOT_PROXY_OPENAI_UPSTREAM');
-  if (knob) return { upstream: knob, source: 'CANNBOT_PROXY_OPENAI_UPSTREAM override' };
+  const knob = pickEnv(env, 'CONTEXT_PROXY_OPENAI_UPSTREAM');
+  if (knob) return { upstream: knob, source: 'CONTEXT_PROXY_OPENAI_UPSTREAM override' };
   const fromEnv = pickEnv(env, 'OPENAI_BASE_URL');
   if (fromEnv) return { upstream: fromEnv, source: 'process env OPENAI_BASE_URL' };
   return { upstream: OPENAI_OFFICIAL, source: 'default (api.openai.com)' };
 }
 
 function resolveResponsesUpstream(env: NodeJS.ProcessEnv, homeDir: string, codexOpenaiBaseUrl: string | null): UpstreamResolution {
-  const knob = pickEnv(env, 'CANNBOT_PROXY_RESPONSES_UPSTREAM');
-  if (knob) return { upstream: knob, source: 'CANNBOT_PROXY_RESPONSES_UPSTREAM override' };
+  const knob = pickEnv(env, 'CONTEXT_PROXY_RESPONSES_UPSTREAM');
+  if (knob) return { upstream: knob, source: 'CONTEXT_PROXY_RESPONSES_UPSTREAM override' };
   const cfg = codexOpenaiBaseUrl?.trim() || null;
   if (cfg) {
     // config.toml 采纳的上游 verbatim（只剥尾斜杠）：codex 向 base 追加

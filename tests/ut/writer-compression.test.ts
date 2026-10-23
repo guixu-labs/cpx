@@ -24,7 +24,7 @@ import {
 import { ensure7z, decompressToPlain } from '../../src/compression.ts';
 
 const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'cpx-7z-'));
-process.env.CANNBOT_PROXY_DIR = tmpRoot;
+process.env.CONTEXT_PROXY_DIR = tmpRoot;
 
 beforeEach(() => {
   fs.rmSync(tmpRoot, { recursive: true, force: true });

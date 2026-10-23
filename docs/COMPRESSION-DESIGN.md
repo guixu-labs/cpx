@@ -4,21 +4,21 @@
 
 > **v0.2.0 起格式从 gzip 升级为 7z**（LZMA2）：jsonl 文本实测压缩率提升
 > 30-50%，数据湖仓配额收益直接；代价是退出压缩耗时上升（-mx=9 下约
-> 1-5MB/s/核，`CANNBOT_7Z_LEVEL` 可降级提速）与外部 7za 二进制依赖
+> 1-5MB/s/核，`CONTEXT_7Z_LEVEL` 可降级提速）与外部 7za 二进制依赖
 > （`7zip-bin` npm 预编译随包，离线可用）。读侧三形态永续：明文 `.jsonl` /
 > 存量 `.jsonl.gz` / 新 `.jsonl.7z`；存量 gz 上传时 staging 统一转 7z 出仓
 > （同 sid 重传整体替换语义天然完成湖内迁移）。7z 档案为确定性产出
 > （`-mtm=off -mta=off -mtc=off`，同内容同字节 → 重传幂等不破坏）。
 
 三个诉求收敛为一个方案：**proxy 捕获落盘即压缩（7z）、insight 透明解压读取、
-cannbay2 仓存 `.jsonl.7z`**。指纹压缩退役（对外可读性差）；标准 7-Zip 工具
+lake 仓存 `.jsonl.7z`**。指纹压缩退役（对外可读性差）；标准 7-Zip 工具
 （`7z e -so x.jsonl.7z`）任何机器可解且 bit 级无损。
 
 | 决策点 | 结论 | 理由 |
 |---|---|---|
 | 压缩格式 | **7z/LZMA2**（`.jsonl.7z`） | 比率高 gzip 30-50%（数据湖配额收益）；`7zip-bin` npm 预编译 7za 随包（离线可用、零系统依赖）；确定性开关保证同内容同字节（重传幂等）；存量 `.jsonl.gz` 读侧永续可读 |
 | 压缩时机 | **live 明文、会话关闭压缩** | live 会话 `tail -F`/增量刷新/断点续捕依赖 append；关闭时机确定（cpx-cli 退出路径） |
-| insight 导入是否单分一路 | **不分离**，透明读层 | 格式契约相同（claude 信封 + x_cannbay），分离=复制整条管线违反单一 adapter 架构；压缩只是传输编码，属于 I/O 层不属于解析层 |
+| insight 导入是否单分一路 | **不分离**，透明读层 | 格式契约相同（claude 信封 + x_lake），分离=复制整条管线违反单一 adapter 架构；压缩只是传输编码，属于 I/O 层不属于解析层 |
 | 仓内形态 | `sessions/<sid>/<sid>.jsonl.7z` + meta 明文（存量 .jsonl.gz 读侧永续、重传时迁移） | 治理必须对明文做（清洗可审计），治理通过后再压缩出仓 |
 | norm/ 镜像 | （已退役，历史条目） | norm 层已随 verbatim 直读退役；本行仅存档 |
 | meta.json | **永远明文** | type/framework/version/producer/子代理关联全在 meta；仓列表与分类器零影响 |
@@ -26,12 +26,12 @@ cannbay2 仓存 `.jsonl.7z`**。指纹压缩退役（对外可读性差）；标
 ## 1. 数据形态总览
 
 ```
-本地（~/.cannbot-insight/proxy/）
+本地（~/.context-insight/proxy/）
   cpx-<sid>.jsonl.7z          主捕获（会话进行中为 cpx-<sid>.jsonl 明文，退出时压缩）—— insight 直读导入
   cpx-<sid>.meta.json         明文（cc-session-meta）
   <sid>/subagents/<sub>.jsonl.7z + <sub>.meta.json
 
-cannbay2 仓（sessions/<sid>/）
+lake 仓（sessions/<sid>/）
   <sid>.jsonl.7z              治理后压缩件（存量 .jsonl.gz / 明文 .jsonl 永续可读，混合共存）
   <sid>.meta.json             明文
   subagents/<sub>.jsonl.7z + <sub>.meta.json
@@ -94,7 +94,7 @@ agent 退出 → proxy flush → 读 .sids 清单
 | `claude-jsonl-full-context.ts` | Full Context / requestParams / wire enrichment（经 parseJsonlLines） | 自动覆盖 |
 | `wire-rounds/route.ts` | wire 轮次（经 parseJsonlLines） | 自动覆盖 |
 | `data-service.ts` | importSession / deltaRefresh / extractClaudeVersion | 自动覆盖（extractVersion 走 parseJsonlLines）；空占位文件存在性检查改 `resolveCapturePath` |
-| `cannbay2/index.ts` patchXCannbayColumns | 物化件读行 | 改走 readCaptureText |
+| `lake/index.ts` patchXLakeColumns | 物化件读行 | 改走 readCaptureText |
 
 原生 claude（`~/.claude/projects/**`，明文、我们不控制其 writer）：reader 直通，
 **零影响**。这就是不分离导入路径的原因——格式契约一致，编码差异消化在 I/O 单点。
@@ -105,7 +105,7 @@ live 会话盘上是明文（增长中）；本会话 sourcePath 在退出导入
 不与 live 态冲突。跨运行 resume：sourcePath=.gz 但盘上是 resume 解压的明文
 scratch → `resolveCapturePath` 第三分支命中，增量刷新照常读明文增长文件。
 
-## 4. cannbay2 侧改动
+## 4. lake 侧改动
 
 ### 4.1 上传（stageSessionFiles → governStagedSession → uploadFolder）
 
@@ -121,12 +121,12 @@ scratch → `resolveCapturePath` 第三分支命中，增量刷新照常读明�
 - 白名单：`.jsonl` / `.json` / **`.jsonl.7z`** / `.jsonl.gz`（存量直传）。
 - 直传源（native claude / 旧明文捕获）：拷贝后同样走"治理→压缩"，出仓统一 gz。
 
-### 4.2 物化与导入（materializeSession → importCannbay2Session）
+### 4.2 物化与导入（materializeSession → importLakeSession）
 
 - ls-tree 映射：`<sid>.jsonl.7z|.gz` → `materialized/<sid>.jsonl.同扩展名`（subagents 同）；
   主文件存在性检查同时接受两种后缀；旧明文仓件照旧物化为 `.jsonl`。
-- importCannbay2Session → importSession → parseJsonlLines 透明解压。
-- patchXCannbayColumns 读行改 readCaptureText。
+- importLakeSession → importSession → parseJsonlLines 透明解压。
+- patchXLakeColumns 读行改 readCaptureText。
 - list / readSessionMetas / type 列：meta 明文，零改动。
 
 ## 5. 指纹压缩回退（commit 5735dc9b 外科手术）
@@ -143,7 +143,7 @@ scratch → `resolveCapturePath` 第三分支命中，增量刷新照常读明�
 - **insight IT**：.gz fixture → importSession（turns/usage/subagent/Full Context
   全量）；.gz 走分类器（meta 路径 + 行级路径）；sourcePath=.gz 的 wire-rounds；
   明文 fixture 回归不变。
-- **cannbay2 IT**：压缩源上传 → 仓内 `.jsonl.7z`（白名单过）→ 治理仍拦密钥
+- **lake IT**：压缩源上传 → 仓内 `.jsonl.7z`（白名单过）→ 治理仍拦密钥
   （明文域清洗可验证：下载解压重跑 governText 零残留）→ 物化 → 导入对账；
   旧明文仓件混合共存导入。
 - **cpx 退出链路**：模拟产物压缩→normalize→import 顺序（单测编排函数）。
@@ -157,9 +157,9 @@ scratch → `resolveCapturePath` 第三分支命中，增量刷新照常读明�
 | proxy | `normalize/` | 读写 .gz |
 | insight | `claude-jsonl.ts` | parseJsonlLines 压缩感知（单点） |
 | insight | `data-service.ts` | 空占位存在性检查 resolveCapturePath |
-| insight | `cannbay2/index.ts` | 回退指纹压缩；staging 解压→治理→压缩；白名单；patch 读行；大小检查 |
-| insight | `cannbay2/mirror.ts` | materialize 双后缀映射 |
-| 文档 | spec §2 布局 + README ×2 | .jsonl.7z 形态声明（"压缩是传输编码，信封与 x_cannbay 契约不变"；存量 .gz 永续可读） |
+| insight | `lake/index.ts` | 回退指纹压缩；staging 解压→治理→压缩；白名单；patch 读行；大小检查 |
+| insight | `lake/mirror.ts` | materialize 双后缀映射 |
+| 文档 | spec §2 布局 + README ×2 | .jsonl.7z 形态声明（"压缩是传输编码，信封与 x_lake 契约不变"；存量 .gz 永续可读） |
 | 版本 | 1.92 → 1.93 | 特性 |
 
 零改动：claude-jsonl adapter 解析逻辑、分类器判定、Full Context 解析、核心

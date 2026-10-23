@@ -40,7 +40,7 @@ function runStatus() {
   return spawnSync('bash', [WRAPPER, 'status'], {
     encoding: 'utf-8',
     timeout: 60_000,
-    env: { ...process.env, CANNBOT_PROXY_DIR: dir },
+    env: { ...process.env, CONTEXT_PROXY_DIR: dir },
   });
 }
 

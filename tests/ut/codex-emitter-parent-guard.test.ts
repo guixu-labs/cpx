@@ -25,7 +25,7 @@ const SID = 'cpx-codex-parent-guard';
 const T = '分析这个仓库并给出结论';
 
 const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cpx-codex-pguard-'));
-process.env.CANNBOT_PROXY_DIR = tmpDir; // BEFORE sessionFilePath 评估（模块级懒读）
+process.env.CONTEXT_PROXY_DIR = tmpDir; // BEFORE sessionFilePath 评估（模块级懒读）
 
 const mainFile = sessionFilePath(SID);
 const subagentsDir = path.join(tmpDir, SID, 'subagents');

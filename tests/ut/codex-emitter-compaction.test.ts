@@ -31,7 +31,7 @@ const SID = 'cpx-codex-compaction';
 const FIXTURE = path.resolve(__dirname, 'data/cpx-codex-compaction.jsonl');
 const P1 = '请分析这个项目的架构并给出报告';
 const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cpx-codex-cmp-'));
-process.env.CANNBOT_PROXY_DIR = tmpDir; // BEFORE sessionFilePath 评估（模块级懒读）
+process.env.CONTEXT_PROXY_DIR = tmpDir; // BEFORE sessionFilePath 评估（模块级懒读）
 
 const mainFile = sessionFilePath(SID);
 
@@ -58,8 +58,8 @@ describe('codex-emitter: 压缩重建重同步', () => {
     const summaries = users.filter((u) =>
       JSON.stringify(u.message.content).includes('Another language model started'));
     expect(summaries.length).toBe(1);
-    expect(summaries[0].x_cannbay.data.roundIndex).toBe(3);
-    expect(summaries[0].x_cannbay.data.kind).toBe('user');
+    expect(summaries[0].x_lake.data.roundIndex).toBe(3);
+    expect(summaries[0].x_lake.data.kind).toBe('user');
   });
 
   it('重建后静态注入/任务文本不重复（内容指纹 multiset 去重）', () => {
@@ -85,10 +85,10 @@ describe('codex-emitter: 压缩重建重同步', () => {
     expect(byCall['call-c-2']).toEqual(['arch: a->b->c']);
     // call-c-3 被同长重写：原稿 + 润色稿都被如实记录（capture ≠ interpret）
     expect(byCall['call-c-3']).toEqual(['report draft written', 'report draft written, polished']);
-    expect(toolResults[0].x_cannbay.data.roundIndex).toBe(1);
+    expect(toolResults[0].x_lake.data.roundIndex).toBe(1);
 
     const assistants = readJsonl(mainFile).filter((r) => r.type === 'assistant');
-    expect(assistants.map((a) => a.x_cannbay.data.roundIndex)).toEqual([0, 1, 2, 3, 4, 5, 6]);
+    expect(assistants.map((a) => a.x_lake.data.roundIndex)).toEqual([0, 1, 2, 3, 4, 5, 6]);
   });
 
   it('同长重写（锚点失配）不丢新内容：润色稿已捕获', () => {
@@ -96,7 +96,7 @@ describe('codex-emitter: 压缩重建重同步', () => {
     const polished = users.filter((u) =>
       JSON.stringify(u.message.content).includes('polished'));
     expect(polished.length).toBe(1);
-    expect(polished[0].x_cannbay.data.roundIndex).toBe(5);
+    expect(polished[0].x_lake.data.roundIndex).toBe(5);
   });
 
   it('send_input 同文重发 verbatim 记录（append 路径不做内容去重）', () => {
@@ -106,7 +106,7 @@ describe('codex-emitter: 压缩重建重同步', () => {
       && u.message.content[0]?.type === 'text'
       && u.message.content[0]?.text === P1);
     expect(resends.length).toBe(2);
-    expect(resends[0].x_cannbay.data.roundIndex).toBe(0);
-    expect(resends[1].x_cannbay.data.roundIndex).toBe(6);
+    expect(resends[0].x_lake.data.roundIndex).toBe(0);
+    expect(resends[1].x_lake.data.roundIndex).toBe(6);
   });
 });

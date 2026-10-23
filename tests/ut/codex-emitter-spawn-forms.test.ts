@@ -31,7 +31,7 @@ const TASK1 = '你是本仓库审计项目的「架构分析员」，负责阶�
 const TASK2 = '你是本仓库审计项目的「复核员」，负责阶段五交叉复核。工作目录：/workspace/demo。';
 
 const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cpx-codex-spawn-'));
-process.env.CANNBOT_PROXY_DIR = tmpDir; // BEFORE sessionFilePath 评估（模块级懒读）
+process.env.CONTEXT_PROXY_DIR = tmpDir; // BEFORE sessionFilePath 评估（模块级懒读）
 
 const mainFile = sessionFilePath(SID);
 const subagentsDir = path.join(tmpDir, SID, 'subagents');
@@ -96,10 +96,10 @@ describe('codex-emitter: spawn 任务文本双形态（0.161 message / 0.162 ite
     const rows1 = readJsonl(subFile1);
     const rounds1 = rows1
       .filter((r) => r.type === 'assistant')
-      .map((r) => r.x_cannbay?.data?.roundIndex ?? r.x_lake?.data?.roundIndex);
+      .map((r) => r.x_lake?.data?.roundIndex);
     expect(rounds1).toEqual([0, 1]);
     const rows2 = readJsonl(subFile2);
-    const rounds2 = rows2.filter((r) => r.type === 'assistant').map((r) => r.x_cannbay?.data?.roundIndex ?? r.x_lake?.data?.roundIndex);
+    const rounds2 = rows2.filter((r) => r.type === 'assistant').map((r) => r.x_lake?.data?.roundIndex);
     expect(rounds2).toEqual([0]);
   });
 

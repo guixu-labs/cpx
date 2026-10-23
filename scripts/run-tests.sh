@@ -16,7 +16,7 @@
 #   2) vitest 仍缺（cpx 未声明该依赖）→ 借同仓 insight 的，必要时替它装好
 #      （npm run test:e2e 同样转调本脚本——vitest 不在本包 .bin，npm script
 #      直接裸调必 command not found）
-# CANNBOT_TEST_SKIP_SLOW=1：ut 层跳过已知环境敏感 it 用例（skipIf 门控），
+# CONTEXT_TEST_SKIP_SLOW=1：ut 层跳过已知环境敏感 it 用例（skipIf 门控），
 # 避免流水线误红；e2e 层不设，透传环境由调用方控制。
 #
 # Copyright (c) 2025-2026 Huawei Technologies Co., Ltd.
@@ -84,7 +84,7 @@ case "$MODE" in
   ut)
     RUN_ARGS=(tests/ut)
     [ "${COVERAGE:-0}" = "1" ] && RUN_ARGS+=(--coverage)
-    CANNBOT_TEST_SKIP_SLOW=1 "$VITEST" run "${RUN_ARGS[@]}"
+    CONTEXT_TEST_SKIP_SLOW=1 "$VITEST" run "${RUN_ARGS[@]}"
     rc=$?
     # vitest 默认失败 run 不产报告（reportOnFailure: false），提示行只在
     # 报告实际落盘后才打，避免指向不存在的文件

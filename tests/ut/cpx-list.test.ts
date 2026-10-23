@@ -35,14 +35,14 @@ function writeLine(file: string, obj: object): void {
 }
 
 function sessionMeta(sid: string, framework: string, protocol: string): object {
-  return { x_cannbay: { schema: 'cc-session-meta', version: 1, data: { producer: 'cpx', framework, protocol, sid } } };
+  return { x_lake: { schema: 'cc-session-meta', version: 1, data: { producer: 'cpx', framework, protocol, sid } } };
 }
 
 function runList() {
   return spawnSync('bash', [WRAPPER, 'list'], {
     encoding: 'utf-8',
     timeout: 60_000,
-    env: { ...process.env, CANNBOT_PROXY_DIR: captureDir() },
+    env: { ...process.env, CONTEXT_PROXY_DIR: captureDir() },
   });
 }
 
@@ -143,7 +143,7 @@ describe('cpx list', () => {
       const r = spawnSync('bash', [WRAPPER, 'list'], {
         encoding: 'utf-8',
         timeout: 60_000,
-        env: { ...process.env, CANNBOT_PROXY_DIR: empty },
+        env: { ...process.env, CONTEXT_PROXY_DIR: empty },
       });
       expect(r.status).toBe(0);
       expect(r.stdout).toContain('no captures yet');
@@ -156,7 +156,7 @@ describe('cpx list', () => {
     const r = spawnSync('bash', [WRAPPER, 'definitely-not-a-command-xyz'], {
       encoding: 'utf-8',
       timeout: 60_000,
-      env: { ...process.env, CANNBOT_PROXY_DIR: captureDir() },
+      env: { ...process.env, CONTEXT_PROXY_DIR: captureDir() },
     });
     // 非已知子命令 → 当作 agent 命令 spawn；本机无此命令 ENOENT，会话干净
     // 收尾（exit 0、零捕获），不影响已有捕获条目

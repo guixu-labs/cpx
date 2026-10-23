@@ -40,14 +40,14 @@ function fakeTsxAt(dir: string): string {
 describe('resolveTsxLoader（从文件位置标准解析）', () => {
   it('嵌套布局（npm i -g）：包内 node_modules 的 tsx 命中', () => {
     const nested = path.join(TMP, 'nested');
-    const pkgFile = path.join(nested, 'node_modules', 'cannbot-proxy', 'src', 'cli', 'cpx-cli.ts');
-    const expected = fakeTsxAt(path.join(nested, 'node_modules', 'cannbot-proxy', 'node_modules', 'tsx'));
+    const pkgFile = path.join(nested, 'node_modules', 'context-cpx', 'src', 'cli', 'cpx-cli.ts');
+    const expected = fakeTsxAt(path.join(nested, 'node_modules', 'context-cpx', 'node_modules', 'tsx'));
     expect(resolveTsxLoader(pkgFile)).toBe(expected);
   });
 
   it('hoist 布局（用户项目安装）：提升到顶层 node_modules 的 tsx 命中，包内无 tsx', () => {
     const hoist = path.join(TMP, 'hoist');
-    const pkgFile = path.join(hoist, 'node_modules', 'cannbot-proxy', 'src', 'cli', 'cpx-cli.ts');
+    const pkgFile = path.join(hoist, 'node_modules', 'context-cpx', 'src', 'cli', 'cpx-cli.ts');
     const expected = fakeTsxAt(path.join(hoist, 'node_modules', 'tsx'));
     expect(resolveTsxLoader(pkgFile)).toBe(expected);
     // 旧硬编码路径在该布局下不存在（修复动机）

@@ -21,7 +21,7 @@ import { sessionFilePath } from '../../src/writer.ts';
 
 const SID = 'cpx-codex-anchor';
 const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cpx-codex-anchor-'));
-process.env.CANNBOT_PROXY_DIR = tmpDir; // BEFORE sessionFilePath 评估（模块级懒读）
+process.env.CONTEXT_PROXY_DIR = tmpDir; // BEFORE sessionFilePath 评估（模块级懒读）
 
 const mainFile = sessionFilePath(SID);
 

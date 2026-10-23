@@ -22,7 +22,7 @@ import { sessionFilePath } from '../../src/writer.ts';
 const SID = 'sid-reuse';
 const FIXTURE = path.resolve(__dirname, 'data/opencode-subagent-tool-records.jsonl');
 const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cpx-subagent-tool-'));
-process.env.CANNBOT_PROXY_DIR = tmpDir; // BEFORE sessionFilePath is evaluated at module scope
+process.env.CONTEXT_PROXY_DIR = tmpDir; // BEFORE sessionFilePath is evaluated at module scope
 const mainFile = sessionFilePath(SID);
 const subagentsDir = path.join(tmpDir, SID, 'subagents');
 
@@ -47,7 +47,7 @@ describe('opencode-emitter：自定义 subagent 派发工具的 meta 收集', ()
     const meta = JSON.parse(fs.readFileSync(path.join(subagentsDir, metaFiles[0]), 'utf-8'));
     expect(meta.toolUseId).toBe('call_sub1');
     expect(meta.name).toBe('P1 需求分析');
-    expect(meta.agentType).toBe('ascendc-ops-architect');
+    expect(meta.agentType).toBe('acme-ops-architect');
   });
 
   it('子会话 jsonl 正常落盘（首条 user 为样板前缀 + 派发 prompt——真机插件形态）', () => {
@@ -68,7 +68,7 @@ describe('opencode-emitter：自定义 subagent 派发工具的 meta 收集', ()
     expect(dispatch).toBeDefined();
     const block = dispatch.message.content.find((b: any) => b.type === 'tool_use' && b.name === 'subagent');
     expect(block.input).toMatchObject({
-      agent: 'ascendc-ops-architect',
+      agent: 'acme-ops-architect',
       description: 'P1 需求分析',
       prompt: '请分析 P1 需求文档，梳理算子 bn3d_training_update_grad 的语义与输入输出约束，并产出结构化分析报告',
       sessionID: 'ses_reuse_sub',

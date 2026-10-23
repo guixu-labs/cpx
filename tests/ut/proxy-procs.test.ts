@@ -32,7 +32,7 @@ function spawnFakeProxy(pinned: string, opts: { withMarker?: boolean; withArgv?:
     stdio: 'ignore',
     env: {
       ...process.env,
-      ...(withMarker ? { CANNBOT_PROXY_SESSION_ID: pinned } : {}),
+      ...(withMarker ? { CONTEXT_PROXY_SESSION_ID: pinned } : {}),
     },
   });
   children.push(child);
@@ -104,7 +104,7 @@ describe('启动期清扫 × 活运行保护（2026-09-21 事故回归）', () =
     fs.writeFileSync(path.join(dir, `cpx-${pinned}.sids`), `${real}\n`);
     const captureFile = path.join(dir, `cpx-${real}.jsonl`);
     fs.writeFileSync(captureFile, '{"v":1}\n');
-    fs.writeFileSync(path.join(dir, `cpx-${real}.meta.json`), '{"x_cannbay":{}}');
+    fs.writeFileSync(path.join(dir, `cpx-${real}.meta.json`), '{"x_lake":{}}');
 
     // 活 proxy 在场（cpx-cli 启动期清扫的活运行判定输入）
     spawnFakeProxy(pinned);
@@ -139,7 +139,7 @@ describe('isOrphanedProc（--kill 孤儿判定：父进程已死）', () => {
   const mk = (ppid: number | null): ProxyProc =>
     ({ pid: 123, ppid, sid: 's', upstream: null, ageSec: 1, port: 1 });
   const init1 = () => '/sbin/init';
-  const cpxCli1 = () => 'node --import /tmp/loader.mjs /app/cannbot-proxy/src/cli/cpx-cli.ts claude';
+  const cpxCli1 = () => 'node --import /tmp/loader.mjs /app/context-cpx/src/cli/cpx-cli.ts claude';
 
   it('ppid=1 且 pid 1 是 init/systemd（重挂收养）→ 孤儿；ppid 死 → 孤儿', () => {
     expect(isOrphanedProc(mk(1), () => true, init1)).toBe(true);

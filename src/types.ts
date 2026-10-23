@@ -15,7 +15,7 @@ export interface AnthropicUsage {
   cache_creation_input_tokens?: number;
   // OpenAI 协议思考计费通道（usage.completion_tokens_details.reasoning_tokens）。
   // anthropic wire 无此字段（thinking 计入 output_tokens），仅 openai 重组器
-  // 填充；emitter 读它写 x_cannbay cc-wire-round.reasoningTokens，insight 侧
+  // 填充；emitter 读它写 x_lake cc-wire-round.reasoningTokens，insight 侧
   // 既有通道恢复 Turn reasoning tokens（anthropic 通道恒不填充，无串扰）。
   reasoning_tokens?: number;
 }

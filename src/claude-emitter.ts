@@ -7,9 +7,9 @@
 // See LICENSE in the root of the software repository for the full text of the License.
 
 // claude-emitter: convert a captured wire-record (ProxyRecord) into claude's
-// session-jsonl line format, so cannbot-insight's existing claude-jsonl adapter
+// session-jsonl line format, so context-insight's existing claude-jsonl adapter
 // + its native subagent pipeline (subagents/ + meta.json) can ingest the proxy's
-// output with zero cannbot-insight changes.
+// output with zero context-insight changes.
 //
 // Each ProxyRecord → delta-emit new user messages (incl. tool_result) as
 // {type:"user"} lines + the response as one {type:"assistant"} line. The
@@ -28,10 +28,10 @@ import type { ProxyRecord, Protocol, AnthropicContentBlock, AnthropicUsage, Open
 import { sessionFilePath, sessionMetaPath, subagentFilePath, subagentMetaPath, appendClaudeLine, writeMeta, PROXY_DIR } from './writer';
 import { isSafeSid } from './session-resolver';
 
-// x_cannbay 命名空间（docs/lake-schema-spec.md）：claude 原生字段是冻结
-// 信封，扩展数据进带 (schema,version) 声明的口袋。双轨期 legacy 顶层字段
+// x_lake 命名空间（docs/lake-schema-spec.md）：claude 原生字段是冻结
+// 信封，扩展数据进带 (schema,version) 声明的口袋。legacy 顶层字段
 // （source/duration_ms/system/tools/ttftMs/stopReason/version/deduped/
-// originalChars）并存写 —— 读方一律 x_cannbay 优先。
+// originalChars）并存写 —— 读方一律 x_lake 优先。
 function xLake(schema: string, data: Record<string, unknown>) {
   return { schema, version: 1, data };
 }
@@ -41,11 +41,11 @@ function xLake(schema: string, data: Record<string, unknown>) {
 // seconds apart — so the tiny read is free). The env var is an explicit
 // override used by tests: '1'=on, '0'=off, unset=hot-read the file.
 function dedupEnabled(): boolean {
-  const env = process.env.CANNBOT_PROXY_DEDUP_INJECTION;
+  const env = process.env.CONTEXT_PROXY_DEDUP_INJECTION;
   if (env === '1') return true;
   if (env === '0') return false;
   try {
-    const dir = process.env.CANNBOT_PROXY_DIR ?? PROXY_DIR;
+    const dir = process.env.CONTEXT_PROXY_DIR ?? PROXY_DIR;
     return JSON.parse(fs.readFileSync(path.join(path.dirname(dir), 'cpx-config.json'), 'utf-8')).dedupInjection === true;
   } catch {
     return false;
@@ -57,7 +57,7 @@ function dedupEnabled(): boolean {
 // file itself declares where it came from — so provenance survives any
 // rename/move, independent of directory conventions. The marker KEEPS the
 // original agent name (claude-proxy / opencode-proxy, by wire protocol).
-// cannbot-insight reads this at import time to label the session.
+// context-insight reads this at import time to label the session.
 // claude-code 把版本号放在 system 的计费头里（x-anthropic-billing-header:
 // cc_version=2.1.234.467; cc_entrypoint=cli;）—— 逐字捕获时顺手留存。
 export function ccVersionFromSystem(system: string | AnthropicContentBlock[] | undefined): string | null {
@@ -72,12 +72,12 @@ export function ccVersionFromSystem(system: string | AnthropicContentBlock[] | u
 //   1) **wire 自描述** —— 有 agent 会把自己的会话头随请求发出（dsh 就是：
 //      body.dsh_session_log.session）。这是最可靠的：不依赖启动参数，
 //      换设备 / 换启动方式都成立，也不需要 cpx-cli 知道具体 agent。
-//   2) **环境变量覆盖** —— CANNBOT_PROXY_AGENT_FRAMEWORK。给"不自报名"的
+//   2) **环境变量覆盖** —— CONTEXT_PROXY_AGENT_FRAMEWORK。给"不自报名"的
 //      agent 留的显式口子。
 //   3) 默认 —— anthropic 协议默认族是 claude-code。
 export function agentFrameworkLabel(body?: unknown): string {
   if (body !== undefined && readDshSessionHeader(body)) return 'dsh';
-  const fw = process.env.CANNBOT_PROXY_AGENT_FRAMEWORK?.trim();
+  const fw = process.env.CONTEXT_PROXY_AGENT_FRAMEWORK?.trim();
   return fw ? fw : 'claude-code';
 }
 
@@ -340,9 +340,6 @@ export function emit(rec: ProxyRecord): void {
         x_lake: xLake('cc-subagent-meta', {
           toolUseId: null,
           name, agentType, subagentSessionId: childId,
-        }), x_cannbay: xLake('cc-subagent-meta', {
-          toolUseId: null,
-          name, agentType, subagentSessionId: childId,
         }),
       });
     }
@@ -353,12 +350,6 @@ export function emit(rec: ProxyRecord): void {
       sessionMetaWritten.add(sid);
       writeMeta(sessionMetaPath(sid), {
         x_lake: xLake('cc-session-meta', {
-          producer: 'cpx',
-          framework: rec.protocol === 'openai' ? 'opencode' : agentFrameworkLabel(body),
-          protocol: rec.protocol,
-          ccVersion: ccVersionFromSystem(body.system),
-          sid,
-        }), x_cannbay: xLake('cc-session-meta', {
           producer: 'cpx',
           framework: rec.protocol === 'openai' ? 'opencode' : agentFrameworkLabel(body),
           protocol: rec.protocol,
@@ -380,11 +371,6 @@ export function emit(rec: ProxyRecord): void {
         name: meta?.name ?? null,
         agentType: meta?.type ?? null,
         x_lake: xLake('cc-subagent-meta', {
-          toolUseId: meta?.toolUseId ?? null,
-          name: meta?.name ?? null,
-          agentType: meta?.type ?? null,
-          subagentSessionId: subId,
-        }), x_cannbay: xLake('cc-subagent-meta', {
           toolUseId: meta?.toolUseId ?? null,
           name: meta?.name ?? null,
           agentType: meta?.type ?? null,
@@ -447,10 +433,6 @@ export function emit(rec: ProxyRecord): void {
           roundIndex: roundCount.get(contextKey) ?? 0,
           kind: 'dedup-placeholder',
           dedup: { originalChars: injectionText!.length, fingerprint },
-        }), x_cannbay: xLake('cc-wire-input', {
-          roundIndex: roundCount.get(contextKey) ?? 0,
-          kind: 'dedup-placeholder',
-          dedup: { originalChars: injectionText!.length, fingerprint },
         }),
       });
       counts.set(hash, occ + 1);
@@ -464,9 +446,6 @@ export function emit(rec: ProxyRecord): void {
       timestamp: toISO(rec.receivedAt),
       source: proxySourceMarker(rec.protocol, body),
       x_lake: xLake('cc-wire-input', {
-        roundIndex: roundCount.get(contextKey) ?? 0,
-        kind: wireInputKind(m),
-      }), x_cannbay: xLake('cc-wire-input', {
         roundIndex: roundCount.get(contextKey) ?? 0,
         kind: wireInputKind(m),
       }),
@@ -484,9 +463,9 @@ export function emit(rec: ProxyRecord): void {
   // interaction.latency → turn-split → Turn.latencyMs, so perf tab sees it
   // WITHOUT an OCP-bending post-write) + `stopReason` (adapter reads →
   // finish_reason → Turn.finishReason). `ttftMs` has no pipeline field, so it
-  // stays a pure extension field (declared in x_cannbay cc-wire-round; today
+  // stays a pure extension field (declared in x_lake cc-wire-round; today
   // it only round-trips via lake cc-db-turn export/patch).
-  // x_cannbay（cc-wire-round）是以上全部信息的声明式权威源（双轨并存，读方优先），
+  // x_lake（cc-wire-round）是以上全部信息的声明式权威源，
   // 并新增 legacy 通道没有的：roundIndex / requestParams / status。
   const contentBlocks = (Array.isArray(rec.response.content) ? rec.response.content as AnthropicContentBlock[] : [])
     .map((b) => {
@@ -516,21 +495,6 @@ export function emit(rec: ProxyRecord): void {
     ttftMs: rec.ttftMs ?? undefined,
     source: proxySourceMarker(rec.protocol, body),
     x_lake: xLake('cc-wire-round', {
-      roundIndex,
-      protocol: rec.protocol,
-      system: body.system ?? undefined,
-      tools: Array.isArray(body.tools) ? body.tools : undefined,
-      requestParams: {
-        temperature: body.temperature,
-        maxTokens: body.max_tokens,
-        model: rec.request.model,
-      },
-      latencyMs: rec.latencyMs,
-      ttftMs: rec.ttftMs ?? undefined,
-      stopReason: rec.response.stop_reason ?? undefined,
-      status: rec.response.status,
-      ccVersion: ccVersionFromSystem(body.system) ?? undefined,
-    }), x_cannbay: xLake('cc-wire-round', {
       roundIndex,
       protocol: rec.protocol,
       system: body.system ?? undefined,

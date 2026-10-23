@@ -7,10 +7,10 @@
 // INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
 // See LICENSE in the root of the software repository for the full text of the License.
 
-// cpx npm bin 启动器（npm install -g cannbot-proxy 后 `cpx` 命令的真身）。
+// cpx npm bin 启动器（npm install -g context-cpx 后 `cpx` 命令的真身）。
 // 仓内开发态走仓根 cpx-cli wrapper（bash，自行寻 tsx）；npm 包形态用本文件：
 // tsx 是本包 dependency，但落位随安装形态而变（npm i -g 嵌套在包内、装进
-// 用户项目 / npx cannbot-proxy 时被提升到顶层 node_modules）——loader 经
+// 用户项目 / npx context-cpx 时被提升到顶层 node_modules）——loader 经
 // createRequire 从本文件做标准模块解析定位，两种布局都能命中。
 
 import { spawn } from 'node:child_process'

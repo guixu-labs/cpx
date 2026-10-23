@@ -8,7 +8,7 @@
 # See LICENSE in the root of the software repository for the full text of the License.
 #
 # install.sh — standalone cpx installer. Two equivalent entry points:
-#   ./proxy/install.sh     standalone: capture works WITHOUT cannbot-insight
+#   ./proxy/install.sh     standalone: capture works WITHOUT context-insight
 #   ./start.sh             insight install delegates here (integrated path)
 # Idempotent; re-run safe. CPX_BINDIR overrides the wrapper target dir
 # (expert/tests: skips PATH/.bashrc modification).

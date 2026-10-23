@@ -8,7 +8,7 @@
 
 // tsx loader 定位（cpx-cli 会话代理起 TS 源码用；bin/cpx.mjs 因自举时序限制
 // 内联同款逻辑）：从给定文件位置做标准模块解析——npm i -g 时 tsx 嵌套在包内
-// node_modules、装进用户项目 / npx cannbot-proxy 时被 npm 提升到顶层
+// node_modules、装进用户项目 / npx context-cpx 时被 npm 提升到顶层
 // node_modules，两种布局 require.resolve 都能命中（tsx 的 `.` export 即
 // ./dist/loader.mjs）。找不到返回 null，调用方回落 npx（registry 网络依赖）。
 import { createRequire } from 'node:module';

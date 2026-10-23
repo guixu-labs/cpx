@@ -134,7 +134,7 @@ afterAll(() => {
 const SCRUB_KEYS = [
   'ANTHROPIC_BASE_URL', 'ANTHROPIC_API_KEY', 'ANTHROPIC_MODEL',
   'OPENAI_BASE_URL', 'OPENAI_API_KEY', 'DEEPSEEK_BASE_URL',
-  'CANNBOT_PROXY_ANTHROPIC_UPSTREAM', 'CANNBOT_PROXY_OPENAI_UPSTREAM', 'CANNBOT_PROXY_RESPONSES_UPSTREAM',
+  'CONTEXT_PROXY_ANTHROPIC_UPSTREAM', 'CONTEXT_PROXY_OPENAI_UPSTREAM', 'CONTEXT_PROXY_RESPONSES_UPSTREAM',
 ];
 
 function writeClaudeSettings(dir: string, env?: Record<string, string>): void {
@@ -165,9 +165,9 @@ function runCpx(profile: 'claude' | 'openai' | 'codex' | 'dsh', extra: {
   const env: NodeJS.ProcessEnv = { ...process.env };
   for (const k of SCRUB_KEYS) delete env[k];
   env.HOME = HOME;
-  env.CANNBOT_PROXY_DIR = CAPTURES;
+  env.CONTEXT_PROXY_DIR = CAPTURES;
   // 钉死不可达：探测必败 → 不机会主义导入开发机在跑的真 insight、不开浏览器
-  env.CANNBOT_CPX_INSIGHT_BASE = 'http://127.0.0.1:1';
+  env.CONTEXT_CPX_INSIGHT_BASE = 'http://127.0.0.1:1';
   env.CPX_TEST_AGENT_MODE = profile;
   if (extra.call) env.CPX_TEST_AGENT_CALL = '1';
   if (extra.dump) env.FAKE_AGENT_DUMP = extra.dump;
@@ -285,13 +285,13 @@ describe('cpx 上游解析：镜像契约（各族解析链 = agent 自身配置
     expect(r.stderr).toContain('upstream: https://api.anthropic.com  (source: default (api.anthropic.com))');
   }, 180_000);
 
-  it('⑥ claude：CANNBOT_PROXY_ANTHROPIC_UPSTREAM 旋钮置顶（胜过 settings 与进程 env）', async () => {
+  it('⑥ claude：CONTEXT_PROXY_ANTHROPIC_UPSTREAM 旋钮置顶（胜过 settings 与进程 env）', async () => {
     writeClaudeSettings(HOME, { ANTHROPIC_BASE_URL: url('USER') });
     const before = hits.length;
     const r = await runCpx('claude', {
       call: true,
       env: {
-        CANNBOT_PROXY_ANTHROPIC_UPSTREAM: url('KNOB'),
+        CONTEXT_PROXY_ANTHROPIC_UPSTREAM: url('KNOB'),
         ANTHROPIC_BASE_URL: url('ENV'),
       },
     });
@@ -300,7 +300,7 @@ describe('cpx 上游解析：镜像契约（各族解析链 = agent 自身配置
     assertHit(run, 'KNOB');
     assertNoHit(run, 'ENV');
     assertNoHit(run, 'USER');
-    expect(r.stderr).toContain(`upstream: ${url('KNOB')}  (source: CANNBOT_PROXY_ANTHROPIC_UPSTREAM override)`);
+    expect(r.stderr).toContain(`upstream: ${url('KNOB')}  (source: CONTEXT_PROXY_ANTHROPIC_UPSTREAM override)`);
   }, 180_000);
 
   it('⑧ openai/generic：进程 env OPENAI_BASE_URL → 转发到该地址（与 claude 同病补齐）', async () => {
@@ -312,12 +312,12 @@ describe('cpx 上游解析：镜像契约（各族解析链 = agent 自身配置
     expect(r.stderr).toContain(`upstream: ${url('OPENAI_ENV')}  (source: process env OPENAI_BASE_URL)`);
   }, 180_000);
 
-  it('⑨ openai/generic：CANNBOT_PROXY_OPENAI_UPSTREAM 旋钮优先于进程 env（既有旋钮语义保持）', async () => {
+  it('⑨ openai/generic：CONTEXT_PROXY_OPENAI_UPSTREAM 旋钮优先于进程 env（既有旋钮语义保持）', async () => {
     const before = hits.length;
     const r = await runCpx('openai', {
       call: true,
       env: {
-        CANNBOT_PROXY_OPENAI_UPSTREAM: url('OPENAI_KNOB'),
+        CONTEXT_PROXY_OPENAI_UPSTREAM: url('OPENAI_KNOB'),
         OPENAI_BASE_URL: url('OPENAI_ENV'),
       },
     });
@@ -352,17 +352,17 @@ describe('cpx 上游解析：镜像契约（各族解析链 = agent 自身配置
     expect(r.stderr).toContain(`upstream: ${url('CODEX_CFG')}/openai  (source: config.toml openai_base_url)`);
   }, 180_000);
 
-  it('⑪ codex：CANNBOT_PROXY_RESPONSES_UPSTREAM 旋钮不被 chatgpt auth 检测覆写（旋钮真最高层）', async () => {
+  it('⑪ codex：CONTEXT_PROXY_RESPONSES_UPSTREAM 旋钮不被 chatgpt auth 检测覆写（旋钮真最高层）', async () => {
     resetCodexHome({ authJson: true });
     const before = hits.length;
     const r = await runCpx('codex', {
       call: true,
-      env: { CANNBOT_PROXY_RESPONSES_UPSTREAM: url('RESP_KNOB') },
+      env: { CONTEXT_PROXY_RESPONSES_UPSTREAM: url('RESP_KNOB') },
     });
     const run = hits.slice(before);
     expect(r.status).toBe(0);
     assertHit(run, 'RESP_KNOB');
-    expect(r.stderr).toContain(`upstream: ${url('RESP_KNOB')}  (source: CANNBOT_PROXY_RESPONSES_UPSTREAM override)`);
+    expect(r.stderr).toContain(`upstream: ${url('RESP_KNOB')}  (source: CONTEXT_PROXY_RESPONSES_UPSTREAM override)`);
   }, 180_000);
 
   it('⑫ dsh：DEEPSEEK_BASE_URL 进程 env → 转发到该地址（既有行为回归锁）', async () => {
@@ -374,12 +374,12 @@ describe('cpx 上游解析：镜像契约（各族解析链 = agent 自身配置
     expect(r.stderr).toContain(`upstream: ${url('DSH')}  (source: process env DEEPSEEK_BASE_URL)`);
   }, 180_000);
 
-  it('⑬ dsh：CANNBOT_PROXY_ANTHROPIC_UPSTREAM 旋钮置顶（anthropic 族共用旋钮）', async () => {
+  it('⑬ dsh：CONTEXT_PROXY_ANTHROPIC_UPSTREAM 旋钮置顶（anthropic 族共用旋钮）', async () => {
     const before = hits.length;
     const r = await runCpx('dsh', {
       call: true,
       env: {
-        CANNBOT_PROXY_ANTHROPIC_UPSTREAM: url('DSH_KNOB'),
+        CONTEXT_PROXY_ANTHROPIC_UPSTREAM: url('DSH_KNOB'),
         DEEPSEEK_BASE_URL: url('DSH'),
       },
     });

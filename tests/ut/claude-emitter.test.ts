@@ -7,8 +7,8 @@
 // See LICENSE in the root of the software repository for the full text of the License.
 
 // Self-contained proxy test: verify the emitter's JSON OUTPUT is correct
-// extended claude-format (no cannbot-insight / Prisma dependency). The
-// cannbot-insight claude-jsonl adapter (its own tests) consumes this format;
+// extended claude-format (no context-insight / Prisma dependency). The
+// context-insight claude-jsonl adapter (its own tests) consumes this format;
 // the two sides are coupled only by the format contract.
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
@@ -21,7 +21,7 @@ import { sessionFilePath } from '../../src/writer.ts';
 const SID = 'cpx-claude-fmt';
 const FIXTURE = path.resolve(__dirname, 'data/cpx-claude-format.jsonl');
 const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cpx-emitter-'));
-process.env.CANNBOT_PROXY_DIR = tmpDir; // BEFORE sessionFilePath is evaluated at module scope
+process.env.CONTEXT_PROXY_DIR = tmpDir; // BEFORE sessionFilePath is evaluated at module scope
 const mainFile = sessionFilePath(SID); // cpx- prefixed, keyed by real sid
 const subagentsDir = path.join(tmpDir, SID, 'subagents');
 
@@ -244,8 +244,8 @@ describe('claude-emitter: wire timing extension fields', () => {
 });
 
 describe('claude-emitter: injection dedup (记录压缩)', () => {
-  beforeAll(() => { process.env.CANNBOT_PROXY_DEDUP_INJECTION = '1'; });
-  afterAll(() => { delete process.env.CANNBOT_PROXY_DEDUP_INJECTION; });
+  beforeAll(() => { process.env.CONTEXT_PROXY_DEDUP_INJECTION = '1'; });
+  afterAll(() => { delete process.env.CONTEXT_PROXY_DEDUP_INJECTION; });
   const sid = 'cpx-dedup';
   const file = sessionFilePath(sid);
   const REGISTRY = 'Available agent types for the Agent tool:\n- claude: Catch-all. (Tools: *)\n- Explore: Read-only search agent.';
@@ -336,7 +336,7 @@ describe('claude-emitter: dedup is opt-in (default OFF) and per-context', () => 
   }
 
   it('with the flag UNSET, duplicate injections record in full (default off)', () => {
-    delete process.env.CANNBOT_PROXY_DEDUP_INJECTION;
+    delete process.env.CONTEXT_PROXY_DEDUP_INJECTION;
     const sid = 'cpx-dedup-off';
     const file = sessionFilePath(sid);
     const msg = [{ role: 'system', content: [{ type: 'text', text: REGISTRY }] }];
@@ -347,7 +347,7 @@ describe('claude-emitter: dedup is opt-in (default OFF) and per-context', () => 
   });
 
   it('main and subagent contexts dedup independently (identical injection kept in each)', () => {
-    process.env.CANNBOT_PROXY_DEDUP_INJECTION = '1';
+    process.env.CONTEXT_PROXY_DEDUP_INJECTION = '1';
     const sid = 'cpx-dedup-ctx';
     const mainFile = sessionFilePath(sid);
     const SUB_SYS = 'main system cc_is_subagent=true';
@@ -389,7 +389,7 @@ describe('claude-emitter: dedup hot switch (config file, no restart)', () => {
   afterAll(() => { try { fs.unlinkSync(cfgFile); } catch { /* */ } });
 
   it('toggling the config file flips dedup on a LIVE session (env unset)', () => {
-    delete process.env.CANNBOT_PROXY_DEDUP_INJECTION;
+    delete process.env.CONTEXT_PROXY_DEDUP_INJECTION;
     const sid = 'cpx-dedup-hot';
     const file = sessionFilePath(sid);
     const msg = () => [{ role: 'system', content: [{ type: 'text', text: REGISTRY }] }];
@@ -418,12 +418,12 @@ describe('claude-emitter: dedup hot switch (config file, no restart)', () => {
   });
 });
 
-describe('claude-emitter: x_cannbay 声明式扩展（docs/cannbay-schema-spec.md）', () => {
-  it('assistant 行双写一致：legacy ≡ x_cannbay.data，且带 roundIndex/requestParams/status', () => {
+describe('claude-emitter: x_lake 声明式扩展（docs/lake-schema-spec.md）', () => {
+  it('assistant 行双写一致：legacy ≡ x_lake.data，且带 roundIndex/requestParams/status', () => {
     const rows = readJsonl(mainFile).filter(r => r.type === 'assistant');
     expect(rows.length).toBeGreaterThan(0);
     for (const r of rows) {
-      const xb = r.x_cannbay;
+      const xb = r.x_lake;
       expect(xb?.schema).toBe('cc-wire-round');
       expect(xb?.version).toBe(1);
       expect(r.duration_ms).toBe(xb.data.latencyMs);
@@ -434,7 +434,7 @@ describe('claude-emitter: x_cannbay 声明式扩展（docs/cannbay-schema-spec.m
       expect(typeof xb.data.status).toBe('number');
     }
     // roundIndex 从 0 连续编号
-    const idx = rows.map(r => r.x_cannbay.data.roundIndex);
+    const idx = rows.map(r => r.x_lake.data.roundIndex);
     expect(idx).toEqual(idx.map((_, i) => i));
   });
 
@@ -442,10 +442,10 @@ describe('claude-emitter: x_cannbay 声明式扩展（docs/cannbay-schema-spec.m
     const metaPath = mainFile.replace(/\.jsonl$/, '.meta.json');
     expect(fs.existsSync(metaPath)).toBe(true);
     const meta = JSON.parse(fs.readFileSync(metaPath, 'utf-8'));
-    expect(meta.x_cannbay.schema).toBe('cc-session-meta');
-    expect(meta.x_cannbay.version).toBe(1);
-    expect(meta.x_cannbay.data.producer).toBe('cpx');
-    expect(['claude-code', 'opencode']).toContain(meta.x_cannbay.data.framework);
+    expect(meta.x_lake.schema).toBe('cc-session-meta');
+    expect(meta.x_lake.version).toBe(1);
+    expect(meta.x_lake.data.producer).toBe('cpx');
+    expect(['claude-code', 'opencode']).toContain(meta.x_lake.data.framework);
   });
 
   it('子代理 meta 双写：cc-subagent-meta 与顶层旧字段同值', () => {
@@ -453,32 +453,32 @@ describe('claude-emitter: x_cannbay 声明式扩展（docs/cannbay-schema-spec.m
     expect(files.length).toBeGreaterThan(0);
     for (const f of files) {
       const meta = JSON.parse(fs.readFileSync(path.join(subagentsDir, f), 'utf-8'));
-      expect(meta.x_cannbay.schema).toBe('cc-subagent-meta');
-      expect(meta.x_cannbay.data.toolUseId).toBe(meta.toolUseId);
-      expect(meta.x_cannbay.data.subagentSessionId).toBe(f.replace(/\.meta\.json$/, ''));
+      expect(meta.x_lake.schema).toBe('cc-subagent-meta');
+      expect(meta.x_lake.data.toolUseId).toBe(meta.toolUseId);
+      expect(meta.x_lake.data.subagentSessionId).toBe(f.replace(/\.meta\.json$/, ''));
     }
   });
 
   it('输入行 cc-wire-input：roundIndex + kind 结构化分类', () => {
-    const rows = readJsonl(mainFile).filter(r => r.x_cannbay?.schema === 'cc-wire-input');
+    const rows = readJsonl(mainFile).filter(r => r.x_lake?.schema === 'cc-wire-input');
     expect(rows.length).toBeGreaterThan(0);
     const KINDS = ['user', 'tool-result', 'injection', 'system', 'command-message', 'dedup-placeholder'];
     for (const r of rows) {
-      expect(typeof r.x_cannbay.data.roundIndex).toBe('number');
-      expect(KINDS).toContain(r.x_cannbay.data.kind);
+      expect(typeof r.x_lake.data.roundIndex).toBe('number');
+      expect(KINDS).toContain(r.x_lake.data.kind);
     }
   });
 });
 
 describe('proxySourceMarker / agentFrameworkLabel（框架标签覆盖）', () => {
-  const saved = process.env.CANNBOT_PROXY_AGENT_FRAMEWORK;
+  const saved = process.env.CONTEXT_PROXY_AGENT_FRAMEWORK;
   afterAll(() => {
-    if (saved === undefined) delete process.env.CANNBOT_PROXY_AGENT_FRAMEWORK;
-    else process.env.CANNBOT_PROXY_AGENT_FRAMEWORK = saved;
+    if (saved === undefined) delete process.env.CONTEXT_PROXY_AGENT_FRAMEWORK;
+    else process.env.CONTEXT_PROXY_AGENT_FRAMEWORK = saved;
   });
 
   it('默认（未设覆盖）：anthropic → claude-proxy，openai/responses 按协议不变', () => {
-    delete process.env.CANNBOT_PROXY_AGENT_FRAMEWORK;
+    delete process.env.CONTEXT_PROXY_AGENT_FRAMEWORK;
     expect(agentFrameworkLabel()).toBe('claude-code');
     expect(proxySourceMarker('anthropic')).toBe('claude-proxy');
     expect(proxySourceMarker('openai')).toBe('opencode-proxy');
@@ -486,7 +486,7 @@ describe('proxySourceMarker / agentFrameworkLabel（框架标签覆盖）', () =
   });
 
   it('wire 自描述优先：body 里有 dsh_session_log → dsh-proxy（无需 env）', () => {
-    delete process.env.CANNBOT_PROXY_AGENT_FRAMEWORK;
+    delete process.env.CONTEXT_PROXY_AGENT_FRAMEWORK;
     const dshBody = { dsh_session_log: { session: { id: 'session-x', origin: 'subagent', parentSession: 'session-p' } } };
     expect(agentFrameworkLabel(dshBody)).toBe('dsh');
     expect(proxySourceMarker('anthropic', dshBody)).toBe('dsh-proxy');
@@ -496,8 +496,8 @@ describe('proxySourceMarker / agentFrameworkLabel（框架标签覆盖）', () =
     expect(proxySourceMarker('responses', dshBody)).toBe('codex-proxy');
   });
 
-  it('dsh profile（CANNBOT_PROXY_AGENT_FRAMEWORK=dsh）：anthropic → dsh-proxy', () => {
-    process.env.CANNBOT_PROXY_AGENT_FRAMEWORK = 'dsh';
+  it('dsh profile（CONTEXT_PROXY_AGENT_FRAMEWORK=dsh）：anthropic → dsh-proxy', () => {
+    process.env.CONTEXT_PROXY_AGENT_FRAMEWORK = 'dsh';
     expect(agentFrameworkLabel()).toBe('dsh');
     expect(proxySourceMarker('anthropic')).toBe('dsh-proxy');
     // 协议差异优先于框架标签：openai/responses 的 marker 不受影响

@@ -72,10 +72,10 @@ beforeAll(async () => {
     cwd: PROXY_ROOT,
     env: {
       ...process.env,
-      CANNBOT_PROXY_PORT: '0',
-      CANNBOT_PROXY_SESSION_ID: SID,
-      CANNBOT_PROXY_OPENAI_UPSTREAM: upstream,
-      CANNBOT_PROXY_DIR: CAPTURES,
+      CONTEXT_PROXY_PORT: '0',
+      CONTEXT_PROXY_SESSION_ID: SID,
+      CONTEXT_PROXY_OPENAI_UPSTREAM: upstream,
+      CONTEXT_PROXY_DIR: CAPTURES,
     },
   });
   await new Promise<void>((resolve, reject) => {

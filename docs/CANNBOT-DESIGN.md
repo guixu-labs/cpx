@@ -29,11 +29,11 @@ cpx-cli（编排）                     server.ts（转发+捕获）           e
   profile 识别 ─┐                     协议：路径推断                  anthropic → claude-emitter
   provider 覆盖 ├→ OPENCODE_CONFIG →  sid：header（x-session-id /    openai    → opencode-emitter
   上游发现     ─┘   _CONTENT 注入      x-claude-code-session-id）      responses → codex-emitter
-  per-session proxy 端口              上游：/<providerId>/ 前缀路由    ↓ writer（jsonl + meta + x_cannbay）
+  per-session proxy 端口              上游：/<providerId>/ 前缀路由    ↓ writer（jsonl + meta + x_lake）
                                       （PROVIDER_UPSTREAMS env）
 ```
 
-三个 emitter 产出**同一** claude 信封 + x_cannbay 格式（spec §3），单个
+三个 emitter 产出**同一** claude 信封 + x_lake 格式（spec §3），单个
 claude-jsonl adapter 消费全部——新 agent 适配点固定为：**协议路由（server）×
 框架标识（emitter meta/marker）× 编排接线（cpx-cli）**。
 
@@ -92,8 +92,8 @@ claude-jsonl adapter 消费全部——新 agent 适配点固定为：**协议�
   `'cannbot-proxy' → 'cannbot'`（未列举的 `*-proxy` 现默认 claude-code，cannbot
   必须显式列出，否则 marker 兜底路径误判）。
 - 徽标（framework='cannbot' 的显示）：`SessionList.tsx`、`LocalFileImport.tsx`
-  （CANNBay type 列 + 导入完成态）、`ImportHistory.tsx`（knownFramework）、
-  cannbay2 type 列 —— 新增 CANNBot 徽标（variant 建议 `purple` 或 `green`，
+  （lake type 列 + 导入完成态）、`ImportHistory.tsx`（knownFramework）、
+  lake type 列 —— 新增 CANNBot 徽标（variant 建议 `purple` 或 `green`，
   与 OpenCode 蓝 / Claude 橙区分）。
 - version 徽标逻辑（`-proxy` 后缀）框架无关，沿用。
 - 语义面板（Skills 覆盖度 / agent-content 等按 framework 定位的 API）：cannbot
@@ -107,14 +107,14 @@ claude-code/codex 三值并列，type 全链路可见、可徽标化）而非归
 
 ### 5.5 normalize 层：零改动（布局归一与框架无关，红线：内容解释在 insight 侧）
 
-## 6. schema spec 合规清单（docs/cannbay-schema-spec.md）
+## 6. schema spec 合规清单（docs/lake-schema-spec.md）
 
 | 条款 | 要求 | 本方案 |
 |---|---|---|
 | §1 信封冻结 | type/timestamp/message 不碰 | ✅ 复用 claude 信封 |
 | §1 加可选字段不升版本 | framework 是开放字符串（§4.4 示例即 `"..."`） | ✅ `'cannbot'` 新值不升 version；spec §4.4 注记补充 |
 | §2 物理布局 | `sessions/<sid>/` + `cpx-` 前缀捕获 | ✅ writer 原样 |
-| §3 单一归属/声明式分发 | 扩展进 `x_cannbay` 口袋 | ✅ 全部复用既有 payload（cc-wire-round/cc-wire-input/cc-session-meta），**零新 schema** |
+| §3 单一归属/声明式分发 | 扩展进 `x_lake` 口袋 | ✅ 全部复用既有 payload（cc-wire-round/cc-wire-input/cc-session-meta），**零新 schema** |
 | §4.1 protocol | `'anthropic'\|'openai'` 线路协议 | ✅ cannbot = openai，不加值 |
 | §4.4 producer=cpx | framework/ccVersion 权威 | ✅ `framework:'cannbot'`、`ccVersion:'1.1.2'` |
 | §6 双轨 | legacy 顶层 `source` 同值并存 | ✅ `source:'cannbot-proxy'`（新 marker 值，读方 map 同步） |
@@ -130,11 +130,11 @@ claude-code/codex 三值并列，type 全链路可见、可徽标化）而非归
     用例组补一条大小写变体）。
   - cpx-cli：导出 `parseArgs`/provider 解析/上游解析做纯函数单测
     （`cannbot` → profile + provider 集含 `cannbot` + 上游链 config→常量）。
-- **schema 形状锁**（tests/cannbay-schema.test.ts ⑥ 对位）：cannbot-producer
+- **schema 形状锁**（形状锁测试对位）：cannbot-producer
   形状锁（meta 双值 + wire-round 字段齐全性）。
 - **insight IT**（闭环）：合成 cannbot 捕获 fixture（UA/头/网关形态）→ 导入 →
   `Session.framework='cannbot'`、`version='1.1.2-proxy'` 形态（版本徽标规则）、
-  subagent 桥接、type 列可见；上传 cannbay2 → 列表 type=CANNBot。
+  subagent 桥接、type 列可见；上传 lake → 列表 type=CANNBot。
 - **真机验证**（一次性，需已 /connect 的 cannbot）：`cpx cannbot` 跑一轮对话 →
   捕获文件非空、meta 正确、insight 在跑则退出即自动导入（否则保留捕获，insight UI 导入）、
   全链路面板；同时验证 title-gen
@@ -159,9 +159,9 @@ claude-code/codex 三值并列，type 全链路可见、可徽标化）而非归
 | marker | `proxy/src/claude-emitter.ts` | `proxySourceMarker` 支持 cannbot |
 | insight | `src/lib/ingest/proxy-classify.ts` | 两个 map 各增一项 |
 | insight UI | `SessionList` / `LocalFileImport` / `ImportHistory` | CANNBot 徽标 |
-| 文档 | `docs/cannbay-schema-spec.md` §4.4 注记、README ×2 | framework 值、cpx cannbot 用法 |
+| 文档 | `docs/lake-schema-spec.md` §4.4 注记、README ×2 | framework 值、cpx cannbot 用法 |
 | 版本 | `src/lib/version.ts` +0.01 | 新特性 |
-| 测试 | proxy/tests + tests/cannbay-schema.test.ts + insight IT | §7 四项 |
+| 测试 | proxy/tests + cpx 形状锁测试 + insight IT | §7 四项 |
 
 零改动：`server.ts` / `session-resolver.ts` / `writer.ts` / `normalize/` /
 claude-jsonl adapter / 核心管线（红线全数保持）。

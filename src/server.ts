@@ -46,17 +46,17 @@ function dispatchEmit(rec: ProxyRecord): void {
 const orderedDispatch = new OrderedDispatcher(dispatchEmit);
 let arrivalCounter = 0;
 
-const PORT = parseInt(process.env.CANNBOT_PROXY_PORT ?? '0', 10) || 0;
-const SESSION_ID = process.env.CANNBOT_PROXY_SESSION_ID ?? '';
-const ANTHROPIC_UPSTREAM = process.env.CANNBOT_PROXY_ANTHROPIC_UPSTREAM ?? 'https://api.anthropic.com';
-const OPENAI_UPSTREAM = process.env.CANNBOT_PROXY_OPENAI_UPSTREAM ?? 'https://api.openai.com';
-const RESPONSES_UPSTREAM = process.env.CANNBOT_PROXY_RESPONSES_UPSTREAM ?? 'https://api.openai.com';
+const PORT = parseInt(process.env.CONTEXT_PROXY_PORT ?? '0', 10) || 0;
+const SESSION_ID = process.env.CONTEXT_PROXY_SESSION_ID ?? '';
+const ANTHROPIC_UPSTREAM = process.env.CONTEXT_PROXY_ANTHROPIC_UPSTREAM ?? 'https://api.anthropic.com';
+const OPENAI_UPSTREAM = process.env.CONTEXT_PROXY_OPENAI_UPSTREAM ?? 'https://api.openai.com';
+const RESPONSES_UPSTREAM = process.env.CONTEXT_PROXY_RESPONSES_UPSTREAM ?? 'https://api.openai.com';
 // opencode per-provider upstream map (JSON {providerId: baseURL}), discovered
 // from the opencode binary by cpx-cli. Lets the proxy forward /<providerId>/…
 // to each provider's REAL upstream (dashscope, bigmodel, …) — fully
 // transparent multi-provider routing, no single-upstream limitation.
 const PROVIDER_UPSTREAMS: Record<string, string> = (() => {
-  try { return JSON.parse(process.env.CANNBOT_PROXY_PROVIDER_UPSTREAMS ?? '{}') as Record<string, string>; }
+  try { return JSON.parse(process.env.CONTEXT_PROXY_PROVIDER_UPSTREAMS ?? '{}') as Record<string, string>; }
   catch { return {}; }
 })();
 
@@ -86,12 +86,12 @@ if (envHttpProxy) {
   }));
 }
 
-// 原始 wire 落盘（协议观测/排障专用，CANNBOT_PROXY_DUMP_DIR=/path 开启）：
+// 原始 wire 落盘（协议观测/排障专用，CONTEXT_PROXY_DUMP_DIR=/path 开启）：
 // 每个被代理的调用写一对 <seq>-request.json + <seq>-response.txt。请求头里
 // 的敏感项（authorization/cookie/api-key/token）打码，body 逐字保留（解码后
 // 的可读形态）。与捕获管线（PROXY_DIR）完全分离——这是回答 wire 格式问题的
 // 调试工具（如 codex 子代理路由信号验证），不参与任何 emitter 消费。
-const DUMP_DIR = process.env.CANNBOT_PROXY_DUMP_DIR ?? '';
+const DUMP_DIR = process.env.CONTEXT_PROXY_DUMP_DIR ?? '';
 let dumpSeq = 0;
 // 请求体与 SSE 响应都可能很大（真机单会话 386 请求 / 18M tokens）：观测
 // 目标是事件形状而非全量内容，超限截断保内存（按字符计，中文内容字节数
@@ -447,6 +447,6 @@ server.listen(PORT, '127.0.0.1', () => {
   if (SESSION_ID) {
     try { fs.closeSync(fs.openSync(sessionFilePath(SESSION_ID), 'a')); } catch { /* best-effort */ }
   }
-  console.log(`[cannbot-proxy] listening on http://127.0.0.1:${port}`);
+  console.log(`[cpx] listening on http://127.0.0.1:${port}`);
   if (process.send) process.send({ type: 'listening', port });
 });

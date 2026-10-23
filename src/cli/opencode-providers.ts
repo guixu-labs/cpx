@@ -191,7 +191,7 @@ export function opencodeConfigRoots(): string[] {
 //      overflow 页非连续时 JSON 截断/digest 不符 → 弃，fail-safe）
 //   ③ <cacheDir>/models.json（1.x 风格扁平缓存；新旧版本混装的机器上
 //      存在，实测与 catalog 语义同源）
-// 全 miss → null（调用方 warn + CANNBOT_PROXY_OPENAI_UPSTREAM 兜底）。
+// 全 miss → null（调用方 warn + CONTEXT_PROXY_OPENAI_UPSTREAM 兜底）。
 // 已知限制：catalog 并非每个 provider 都带 api（实测 225 个中 26 个无，
 // 如 anthropic——其 SDK 硬编码默认端点），这些依旧走 warn 路径。
 const MODELS_DEV_KV_KEY = 'models-dev:catalog';

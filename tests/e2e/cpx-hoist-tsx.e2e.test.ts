@@ -6,9 +6,9 @@
 // INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY OR FITNESS FOR A PARTICULAR PURPOSE.
 // See LICENSE in the root of the software repository for the full text of the License.
 
-// 会话代理 tsx 启动 hoist 布局 IT（npm i cannbot-proxy 进用户项目 / npx
-// cannbot-proxy 的安装形态回归）：
-//   fixture = 用户项目布局——node_modules/cannbot-proxy（包体拷贝，**无**内嵌
+// 会话代理 tsx 启动 hoist 布局 IT（npm i context-cpx 进用户项目 / npx
+// context-cpx 的安装形态回归）：
+//   fixture = 用户项目布局——node_modules/context-cpx（包体拷贝，**无**内嵌
 //   node_modules）+ tsx/esbuild/@esbuild 提升到顶层 node_modules（npm hoist）。
 //   断言四件事：
 //   ① bin 启动器起 cpx-cli 成功（createRequire 解析提升的 tsx loader）
@@ -39,7 +39,7 @@ let NPX_MARKER: string;
 beforeAll(() => {
   TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'cpx-hoist-tsx-it-'));
   PROJECT = path.join(TMP, 'project');
-  PKG = path.join(PROJECT, 'node_modules', 'cannbot-proxy');
+  PKG = path.join(PROJECT, 'node_modules', 'context-cpx');
   HOME = path.join(TMP, 'home');
   CAPTURES = path.join(TMP, 'captures');
 
@@ -102,9 +102,9 @@ describe('cpx 会话代理 tsx 启动（用户项目 hoist 布局）', () => {
       env: {
         ...process.env,
         HOME,
-        CANNBOT_PROXY_DIR: CAPTURES,
+        CONTEXT_PROXY_DIR: CAPTURES,
         // 钉死不可达：探测必败 → 不机会主义导入开发机在跑的真 insight、不开浏览器
-        CANNBOT_CPX_INSIGHT_BASE: 'http://127.0.0.1:1',
+        CONTEXT_CPX_INSIGHT_BASE: 'http://127.0.0.1:1',
         PATH: [path.join(TMP, 'bin'), process.env.PATH ?? ''].join(path.delimiter),
       },
     });
