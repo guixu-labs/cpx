@@ -505,3 +505,138 @@ describe('proxySourceMarker / agentFrameworkLabel（框架标签覆盖）', () =
     expect(proxySourceMarker('responses')).toBe('codex-proxy');
   });
 });
+
+// ── agent-id 头分桶：续会归队（x-claude-code-agent-id）──
+// 实验验证（2026-10-23 真机 wire 抓取）：claude 子代理请求带专属头
+// x-claude-code-agent-id（主会话无此头；a+16hex，与原生 task-notification
+// task-id 同源）。按它分桶后，看门狗重启/续会的子代理流（任务 prompt 已变、
+// 无新派发 → 旧 prompt-md5 分桶会裂成新文件且 meta 全 null）落回原成员文件。
+describe('claude-emitter: agent-id 头分桶（续会归队）', () => {
+  const SID2 = 'cpx-agent-id-bucket';
+  const dir2 = path.join(tmpDir, SID2, 'subagents');
+  const base = (over: Record<string, unknown>) => ({
+    sid: SID2,
+    protocol: 'anthropic',
+    receivedAt: 1_000,
+    completedAt: 2_000,
+    latencyMs: 1_000,
+    ttftMs: null,
+    request: { path: '/v1/messages', model: 'glm-5.2', body: {}, claudeAgentId: null, ...over.request },
+    response: { status: 200, model: 'glm-5.2', stop_reason: null, content: [{ type: 'text', text: 'ok' }], usage: { input_tokens: 1, output_tokens: 1 } },
+    ...over,
+  });
+  const subRec = (agentId: string | null, task: string) => base({
+    request: {
+      claudeAgentId: agentId,
+      body: {
+        system: [{ type: 'text', text: 'main system cc_is_subagent=true' }],
+        tools: [{ name: 'Read' }],
+        messages: [{ role: 'user', content: [{ type: 'text', text: task }] }],
+      },
+    },
+    response: { status: 200, model: 'glm-5.2', stop_reason: null, content: [{ type: 'text', text: `回:${task.slice(0, 6)}` }], usage: { input_tokens: 1, output_tokens: 1 } },
+  });
+
+  beforeAll(() => {
+    // 原始流（agent-1，任务 A）→ 续会流（同 agent-1，prompt 完全不同，无派发）
+    // → 另一成员（agent-2）→ 无头流（旧行为回落）
+    emit(subRec('aAgentId0000000001', '原始任务：设计文档 A'));
+    emit(subRec('aAgentId0000000001', '从中断点继续：继续做 B 部分（续会 prompt）'));
+    emit(subRec('aAgentId0000000002', '另一成员的任务 C'));
+    emit(subRec(null, '无头旧形态任务 D'));
+  });
+
+  it('同 agent-id 的续会流归回原成员文件（不裂新文件）', () => {
+    const files = fs.readdirSync(dir2).filter(f => f.endsWith('.jsonl'));
+    // 4 轮 → 3 个文件（agent-1 两轮合一、agent-2、无头）
+    expect(files.length).toBe(3);
+    const agent1File = files.map(f => path.join(dir2, f))
+      .find(f => readJsonl(f).some(r => JSON.stringify(r).includes('原始任务')));
+    expect(agent1File).toBeDefined();
+    const rows = readJsonl(agent1File!);
+    expect(rows.some(r => JSON.stringify(r).includes('原始任务'))).toBe(true);
+    expect(rows.some(r => JSON.stringify(r).includes('从中断点继续'))).toBe(true);
+  });
+
+  it('meta 只写一份（续会不再写新 meta）', () => {
+    const metas = fs.readdirSync(dir2).filter(f => f.endsWith('.meta.json'));
+    expect(metas.length).toBe(3);
+  });
+});
+
+// ── 异步派发 meta 回填 ──
+// 真机后台 Agent（requestShape:background）实测顺序：子代理首轮请求先于
+// 父响应落盘（父 turn 仍在流式输出）→ 首写 meta 三字段 null；父响应带
+// Agent tool_use 后到 → 回填重写。原生 meta 后台型自带 toolUseId，此处对齐。
+describe('claude-emitter: 异步派发 meta 回填', () => {
+  const SID3 = 'cpx-async-meta';
+  const dir3 = path.join(tmpDir, SID3, 'subagents');
+  const TASK = '后台任务：统计捕获目录布局-async-回填用例';
+  const base = (over: Record<string, unknown>) => ({
+    sid: SID3,
+    protocol: 'anthropic',
+    receivedAt: 1_000,
+    completedAt: 2_000,
+    latencyMs: 1_000,
+    ttftMs: null,
+    request: { path: '/v1/messages', model: 'glm-5.2', body: {}, claudeAgentId: null, ...over.request },
+    response: { status: 200, model: 'glm-5.2', stop_reason: null, content: [{ type: 'text', text: 'ok' }], usage: { input_tokens: 1, output_tokens: 1 } },
+    ...over,
+  });
+  // 子代理流（agentId + 任务 prompt 首轮）。真机形态：任务块带尾随换行，
+  // 而父侧 Agent tool_use 的 prompt 无——归一化前一个 \n 即致命失配
+  const subRec = (agentId: string, task: string) => base({
+    request: {
+      claudeAgentId: agentId,
+      body: {
+        system: [{ type: 'text', text: 'main system cc_is_subagent=true' }],
+        tools: [{ name: 'Read' }],
+        messages: [{ role: 'user', content: [{ type: 'text', text: task + '\n' }] }],
+      },
+    },
+  });
+  // 父响应：内容为 Agent tool_use（携带派发三要素）
+  const dispatchRec = (prompt: string) => base({
+    request: {
+      body: {
+        system: [{ type: 'text', text: 'main system' }],
+        tools: [{ name: 'Agent' }],
+        messages: [{ role: 'user', content: 'go' }],
+      },
+    },
+    response: {
+      status: 200, model: 'glm-5.2', stop_reason: null,
+      content: [{ type: 'tool_use', id: 'toolu_async_backfill_1', name: 'Agent', input: { description: '统计目录布局', subagent_type: 'Explore', prompt } }],
+      usage: { input_tokens: 1, output_tokens: 1 },
+    },
+  });
+  const metasOf = (): Record<string, any> => {
+    const out: Record<string, any> = {};
+    for (const f of fs.readdirSync(dir3).filter(f => f.endsWith('.meta.json'))) {
+      out[f.replace(/\.meta\.json$/, '')] = JSON.parse(fs.readFileSync(path.join(dir3, f), 'utf-8'));
+    }
+    return out;
+  };
+
+  it('子先父后：首写 null → 父派发到达后回填重写（对齐原生后台型 meta）', () => {
+    emit(subRec('asyncAgentId00001', TASK));
+    const subId = Object.keys(metasOf()).find(k => metasOf()[k].toolUseId === null);
+    expect(subId).toBeDefined();
+    emit(dispatchRec(TASK));
+    const meta = metasOf()[subId!];
+    expect(meta.toolUseId).toBe('toolu_async_backfill_1');
+    expect(meta.name).toBe('统计目录布局');
+    expect(meta.agentType).toBe('Explore');
+    expect(meta.x_lake.data.toolUseId).toBe('toolu_async_backfill_1');
+    expect(meta.x_lake.data.subagentSessionId).toBe(subId);
+  });
+
+  it('派发永不到达：meta 保持 null 且不再重写', () => {
+    emit(subRec('lostAgentId000002', '后台任务：派发丢失场景-async'));
+    const before = JSON.stringify(metasOf());
+    const lost = Object.entries(metasOf()).find(([, m]) => m.toolUseId === null);
+    expect(lost).toBeDefined();
+    emit(subRec('lostAgentId000002', '后续轮次，任务已变'));
+    expect(JSON.stringify(metasOf())).toBe(before);
+  });
+});

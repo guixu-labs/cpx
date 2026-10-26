@@ -211,16 +211,18 @@ function subagentTask(rec: ProxyRecord): string | null {
   if (!msgs || !msgs.length) return null;
   const m0 = msgs[0];
   if (m0.role !== 'user') return null;
+  // trim 归一：真机子代理任务块带尾随换行，而父侧 Agent tool_use 的
+  // prompt 无——原始字符串建键必然失配（派发收集/回填/subId 分桶同键）
   if (typeof m0.content === 'string') {
-    const t = m0.content.trimStart();
-    return (t && !t.startsWith('<system-reminder>') && !t.startsWith('The user stepped away')) ? m0.content : null;
+    const t = m0.content.trim();
+    return (t && !t.startsWith('<system-reminder>') && !t.startsWith('The user stepped away')) ? t : null;
   }
   if (Array.isArray(m0.content)) {
     for (const b of m0.content) {
       if (b.type !== 'text' || !b.text) continue;
-      const tr = b.text.trimStart();
-      if (tr.startsWith('<system-reminder>') || tr.startsWith('The user stepped away')) continue;
-      return b.text;
+      const tr = b.text.trim();
+      if (!tr || tr.startsWith('<system-reminder>') || tr.startsWith('The user stepped away')) continue;
+      return tr;
     }
   }
   return null;
@@ -237,7 +239,17 @@ const emittedCounts = new Map<string, Map<string, number>>(); // contextKey → 
 const emittedInjections = new Map<string, Set<string>>();
 const agentDispatch = new Map<string, { toolUseId: string | null; name: string | null; type: string | null }>();
 const subIdForTask = new Map<string, string>();
+// agent-id 头 → subId（首见时登记；续会请求带头再来 → 命中同 subId → 同文件
+// 追加 + 继承 meta 归属）。头是 claude 逻辑成员级身份，跨重启稳定（实验验证
+// x-claude-code-agent-id 仅子代理请求携带）；缺失时回落 prompt 分桶不劣化。
+const subIdForAgentId = new Map<string, string>();
 const metaWritten = new Set<string>();
+// 异步派发（后台 Agent，requestShape:background）：子代理首轮请求先于父响应
+// 落盘（父 turn 仍在流式输出）→ 首写 meta 时 agentDispatch 尚无该派发，
+// toolUseId/name/type 全 null。原生 harness 自己持有派发 id（原生 meta 后台
+// 型也带 toolUseId），对齐之：未解析的 meta 挂起，派发在后续 emit 到达时
+// 回填重写。write-once 只约束「创建」；挂起集以 subId 记父 sid + task。
+const pendingSubMeta = new Map<string, { sid: string; task: string }>();
 // contextKey → 已发出的 assistant 行数（= 该上下文的 wire 轮次号，cc-wire-round.roundIndex）
 const roundCount = new Map<string, number>();
 const sessionMetaWritten = new Set<string>();
@@ -249,6 +261,23 @@ function subIdFor(task: string): string {
     subIdForTask.set(task, id);
   }
   return id;
+}
+
+// 子代理 meta（cc-subagent-meta 双信封）单点写：创建与回填共用同一形态。
+// meta 未解析（agentDispatch 缺项）时三字段 null，由调用方挂起待回填。
+function writeSubagentMeta(
+  sid: string,
+  subId: string,
+  meta: { toolUseId: string | null; name: string | null; type: string | null } | undefined,
+): void {
+  const toolUseId = meta?.toolUseId ?? null;
+  const name = meta?.name ?? null;
+  const agentType = meta?.type ?? null;
+  const inner = { toolUseId, name, agentType, subagentSessionId: subId };
+  writeMeta(subagentMetaPath(sid, subId), {
+    toolUseId, name, agentType,
+    x_lake: xLake('cc-subagent-meta', inner),
+  });
 }
 
 function toISO(ts: number): string {
@@ -292,14 +321,23 @@ export function emit(rec: ProxyRecord): void {
     for (const b of blocks) {
       if (b.type !== 'tool_use' || b.name !== 'Agent' || !b.input) continue;
       const inp = b.input as { description?: string; subagent_type?: string; prompt?: string };
-      if (inp.prompt && !agentDispatch.has(inp.prompt)) {
-        agentDispatch.set(inp.prompt, {
+      const dispatchKey = inp.prompt?.trim();
+      if (dispatchKey && !agentDispatch.has(dispatchKey)) {
+        agentDispatch.set(dispatchKey, {
           toolUseId: b.id ?? null,
           name: inp.description ?? null,
           type: inp.subagent_type ?? null,
         });
       }
     }
+  }
+
+  // 异步派发回填：本轮收集到的新派发，补写此前挂起的子代理 meta
+  for (const [subId, p] of pendingSubMeta) {
+    const meta = agentDispatch.get(p.task);
+    if (!meta) continue;
+    pendingSubMeta.delete(subId);
+    writeSubagentMeta(p.sid, subId, meta);
   }
 
   // Resolve context + target file.
@@ -360,23 +398,23 @@ export function emit(rec: ProxyRecord): void {
     }
   } else {
     const task = subagentTask(rec);
-    const subId = task ? subIdFor(task) : 'sub-unknown';
+    // 归属优先级：x-claude-code-agent-id 头（逻辑成员身份，续会继承）> 任务
+    // prompt md5（现状分桶）。按头分桶时续会流直接落入原成员文件——原生
+    // harness 把续会记回同一 agent 文件，此处分桶与之对齐
+    const agentId = rec.request.claudeAgentId;
+    let subId: string | null = agentId ? subIdForAgentId.get(agentId) ?? null : null;
+    if (!subId) {
+      subId = task ? subIdFor(task) : 'sub-unknown';
+      if (agentId) subIdForAgentId.set(agentId, subId);
+    }
     contextKey = subId;
     targetFile = subagentFilePath(sid, subId);
     if (task && !metaWritten.has(subId)) {
       metaWritten.add(subId);
       const meta = agentDispatch.get(task);
-      writeMeta(subagentMetaPath(sid, subId), {
-        toolUseId: meta?.toolUseId ?? null,
-        name: meta?.name ?? null,
-        agentType: meta?.type ?? null,
-        x_lake: xLake('cc-subagent-meta', {
-          toolUseId: meta?.toolUseId ?? null,
-          name: meta?.name ?? null,
-          agentType: meta?.type ?? null,
-          subagentSessionId: subId,
-        }),
-      });
+      writeSubagentMeta(sid, subId, meta);
+      // 派发未到（异步先于父响应落盘）→ 挂起待回填
+      if (!meta) pendingSubMeta.set(subId, { sid, task });
     }
   }
 

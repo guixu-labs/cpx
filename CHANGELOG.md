@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed
+- 按成员身份归档子代理捕获流：同一成员重启续跑不再裂成无归属新文件（与 insight 的桥接/时间线展示配套）
+- 后台（异步）派发的子代理 meta 补齐派发 id/名称/类型：子代理先于父响应落盘时先记空值、派发到达后回填重写，桥接不再依赖兜底路径
+
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 
 ## [v0.1.12] - 2026-10-22

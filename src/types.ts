@@ -71,6 +71,10 @@ export interface ProxyRecord {
     path: string;
     model: string | null;
     body: unknown;
+    /** claude 子代理请求专属身份头 x-claude-code-agent-id（主会话无此头）。
+     *  逻辑成员级标识：续会（看门狗重启/继续）继承同值——按它分桶子代理流
+     *  可把续会归回原成员，替代按任务 prompt md5 分桶的猜谜 */
+    claudeAgentId: string | null;
   };
   response: {
     status: number;

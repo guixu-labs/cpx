@@ -381,6 +381,7 @@ function buildRecord(
   const xSessionId = req ? (req.headers['x-session-id'] as string | undefined) ?? null : null;
   const userAgent = req ? (req.headers['user-agent'] as string | undefined) ?? null : null;
   const parentSessionId = req ? (req.headers['x-parent-session-id'] as string | undefined) ?? null : null;
+  const claudeAgentId = req ? (req.headers['x-claude-code-agent-id'] as string | undefined) ?? null : null;
   return {
     sid,
     protocol,
@@ -392,6 +393,7 @@ function buildRecord(
       path: req?.url ?? '',
       model,
       body: requestBody ?? {},
+      claudeAgentId,
     },
     response: {
       status,
