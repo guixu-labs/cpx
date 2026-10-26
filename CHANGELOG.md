@@ -8,6 +8,11 @@
 
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 
+## [v0.1.13] - 2026-10-26
+
+### Fixed
+- undici 6.28.1 → 6.29.1：闭环 CVE-2026-109869（7.5 High）/ CVE-2026-109924（5.9 Medium）
+
 ## [v0.1.12] - 2026-10-22
 
 > 更名说明：npm 包主体自本版起为 `context-cpx`（命令仍为 `cpx`，捕获目录 `~/.context-insight/proxy/`）；`cannbot-proxy` 转为同内容变体包。捕获格式契约与 insight ≥ v0.2.41 配套。
