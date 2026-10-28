@@ -168,7 +168,7 @@ cpx config dedup off              # 关闭
 | tool_result 回填到对应 tool_use | adapter | ✅ |
 | 测试（proxy 自包含 12 用例：JSON 内容校验，无 Prisma/insight 依赖；全量 `npm run test` 通过） | `proxy/tests/claude-emitter.test.ts` + `proxy/tests/reassembler.test.ts` | ✅ |
 | 注入压缩（dedup，默认 off，`cpx config dedup on\|off`；只压记录不改转发；主/子代理上下文独立判重；status 显示压缩率） | `proxy/src/claude-emitter.ts` + `proxy/src/cli/cpx-cli.ts` | ✅ IT（真实任务验证子代理派发不受影响） |
-| 密钥清洗（redact：结构层键名全等 + 字符串层厂家键形，`dispatchEmit` 咽喉接入，cpx 启动行同源打码） | `proxy/src/redactor.ts` + `server.ts` | ✅ IT + 真机 E2E（claude/opencode 双链路 0 泄漏，见 §7） |
+| 密钥清洗（redact：结构层键名全等 + 字符串层厂家键形，`dispatchEmit` 统一入口接入，cpx 启动行同源打码） | `proxy/src/redactor.ts` + `server.ts` | ✅ IT + 真机 E2E（claude/opencode 双链路 0 泄漏，见 §7） |
 
 **端到端实测**：`cpx-cli claude -p` → claude `--settings` 进程级注入生效 → 请求被 proxy 拦截 → sid 精确归因 → glm-5.2 真实响应捕获 → 密钥 0 落盘（redact，见 §7）→ 导入 insight → system turn 落库（"You are Claude Code..."）。
 

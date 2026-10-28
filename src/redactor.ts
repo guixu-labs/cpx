@@ -13,7 +13,7 @@
 // system/tools 扩展字段）。本模块两层清洗：结构层按键名全等命中换掩码，
 // 字符串层按各厂家键特征（sk-ant-/sk-or-/gsk_/AIza/xai-/…、Bearer 凭据、
 // env 赋值、内嵌 JSON、URL query）打码。接入点是 server.ts 的 dispatchEmit
-// —— 所有落盘的唯一咽喉。
+// —— 所有落盘数据的唯一必经入口。
 import type { ProxyRecord } from './types';
 
 export function maskSecret(v: string): string {

@@ -6,7 +6,7 @@
 // INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
 // See LICENSE in the root of the software repository for the full text of the License.
 
-// 压缩唯一咽喉（docs/COMPRESSION-DESIGN.md）：7z at rest。
+// 压缩统一入口（docs/COMPRESSION-DESIGN.md）：7z at rest。
 // 写侧只出 .jsonl.7z（LZMA2，确定性开关保证同内容同字节→重传幂等）；
 // 读侧三形态永续可读：.jsonl / .jsonl.gz（存量）/ .jsonl.7z。
 // 与 insight src/lib/compression.ts 同构（受控双实现，命令常量保持一致）。

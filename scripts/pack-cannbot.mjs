@@ -44,7 +44,7 @@ const EXCLUDE = new Set(['scripts/pack-cannbot.mjs'])
 
 // 通用规则（全部文本文件；精确字符串替换，非正则）
 const GLOBAL_RULES = [
-  // 数据目录引号字面量（writer / cpx-cli / cpx-complete / insight-discovery 真身）
+  // 数据目录引号字面量（writer / cpx-cli / cpx-complete / insight-discovery 各处出现）
   { find: "'.context-insight'", replace: "'.cannbot-insight'", minHits: 3 },
   { find: '~/.context-insight', replace: '~/.cannbot-insight', minHits: 3 },
   // 宽形态兜底：~ 规则之后残留的斜杠嵌入（当前 0 命中，防未来形态漂移）

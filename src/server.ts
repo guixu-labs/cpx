@@ -28,7 +28,7 @@ import type { Protocol, ProxyRecord } from './types';
 // manifest so cpx knows at exit which capture files this run produced.
 const emittedSids = new Set<string>();
 function dispatchEmit(rec: ProxyRecord): void {
-  // 落盘前清洗（唯一咽喉：所有 emitter 的数据都经这里进 jsonl）
+  // 落盘前清洗（唯一入口：所有 emitter 的数据都经这里进 jsonl）
   redactRecord(rec);
   // Child sessions file under their PARENT's tree (x-parent-session-id), so
   // only parent/main sids belong in the manifest cpx imports from.

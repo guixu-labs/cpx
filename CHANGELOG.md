@@ -99,12 +99,12 @@
 
 ### Added
 - 【补全热路径分层：静态上下文 ~3ms（原 ~570ms）】静态候选（首词子命令/agent 命令/保留参数、--agent profile、config on/off）在补全脚本**生成时**从 TS 常量内嵌为 bash 纯内建路由——零进程零 node 冷启。node 侧不再走 tsx 运行时转换整个 CLI 导入图——postinstall 用 tsx 自带的 esbuild 预编译微型 bundle（`dist/cpx-complete.mjs`），bundle 缺失回退 `cpx __complete` 慢路径（功能不丢）。补全引擎独立入口 `runCompleteMain`（cpx 分发与 bundle 共用）；每次安装/升级 postinstall 重建 bundle 并重写补全脚本（绝对路径保鲜；静态表单一来源不漂移）
-- 【Tab 补全自动装配——安装即用，无需手动启用】npm 包新增 postinstall 钩子（`scripts/postinstall.mjs`，复用 `bin/cpx.mjs` 真身安装，脚本文本单一来源）：bash 写用户级 bash-completion 自动加载目录（`~/.local/share/bash-completion/completions/cpx`）；zsh 仅在实际是 zsh 用户时装配 `~/.zfunc/_cpx` 并幂等追加 .zshrc fpath/compinit。独立安装 `install.sh` 末尾同一钩子。全程 best-effort：补全装不上绝不阻断安装。手动修复仍可用 `cpx completion bash|zsh --install`
+- 【Tab 补全自动装配——安装即用，无需手动启用】npm 包新增 postinstall 钩子（`scripts/postinstall.mjs`，复用 `bin/cpx.mjs` 实际安装逻辑，脚本文本单一来源）：bash 写用户级 bash-completion 自动加载目录（`~/.local/share/bash-completion/completions/cpx`）；zsh 仅在实际是 zsh 用户时装配 `~/.zfunc/_cpx` 并幂等追加 .zshrc fpath/compinit。独立安装 `install.sh` 末尾同一钩子。全程 best-effort：补全装不上绝不阻断安装。手动修复仍可用 `cpx completion bash|zsh --install`
 - 【`cpx completion [bash|zsh] [--install]` —— Tab 补全】`cpx <TAB>` 补子命令/常见 agent 命令/保留参数；`--agent <TAB>` 补 profile；`cpx config dedup <TAB>` 补 on/off；`cpx status <TAB>` 补 --kill/--all。实现走 kubectl/npm 同款模式：shell 脚本只做转发，候选逻辑全部在 `cpx __complete` 隐藏命令内单一实现（跨 shell 一致）；`--install` 落盘 bash-completion/`~/.zfunc` 自动加载目录。agent 命令之后的参数域不越界补全且 TAB 静默（无文件名兜底噪音；opencode 等有自己的补全）
 
 ### Fixed
 - 【ssh/终端挂断（SIGHUP）裸死不收尾——ses 9fd46cc3 根因修复】cpx-cli 此前只有 SIGINT/SIGTERM handler，SIGHUP 无 handler → Node 默认直接裸死，零清理：捕获留明文、.sids/占位文件残留、**永不压缩**（实测 ssh 掉线杀 cpx、孤儿 claude 后续退出无人收尾；用户 Ctrl+C 的是孤儿 claude，其 cpx 早已死亡）。修复两层：
-  - `process.on('SIGHUP')` handler，**只"不死"不做其他动作**——main() 本就在 await agent 退出，挂断后两种形态都收敛到完整收尾（压缩→导入）：agent 随挂断而死 → child.on('exit') 立即触发；agent 扛过挂断（claude bg-pty-host，断线可重连）→ cpx 同步存活陪跑、会话继续捕获，agent 最终退出时（哪怕数小时后）仍走完整收尾——不主动杀 agent，保住断线重连工作流。注意：SIGHUP 是内核向整个前台进程组投递的信号（raw mode 的 ISIG 屏蔽不了它，与按键 Ctrl+C 不同）；tsx wrapper 链的监管进程无 handler 仍会死（生产同款、无碍——脚本真身与 agent 互为直系父子，收尾链路不受影响）
+  - `process.on('SIGHUP')` handler，**只"不死"不做其他动作**——main() 本就在 await agent 退出，挂断后两种形态都收敛到完整收尾（压缩→导入）：agent 随挂断而死 → child.on('exit') 立即触发；agent 扛过挂断（claude bg-pty-host，断线可重连）→ cpx 同步存活陪跑、会话继续捕获，agent 最终退出时（哪怕数小时后）仍走完整收尾——不主动杀 agent，保住断线重连工作流。注意：SIGHUP 是内核向整个前台进程组投递的信号（raw mode 的 ISIG 屏蔽不了它，与按键 Ctrl+C 不同）；tsx wrapper 链的监管进程无 handler 仍会死（生产同款、无碍——脚本本体与 agent 互为直系父子，收尾链路不受影响）
   - **stdout/stderr EIO 硬化**（真实 PTY 挂断复测发现的第二层 bug）：挂断后 tty slave 已死，任何日志写入收到 EIO——与 EPIPE 不同，Node 对 stdout 的 EIO 默认不忽略，会以 uncaught error 崩掉孤儿态收尾（仅加 SIGHUP handler 时 handler 自己的 log() 就足以触发自杀）。装 noop error 监听吞掉，保证压缩→导入全程不被日志写崩
   - 验证（真实 PTY 挂断三组对照复测：setsid + 控制终端 + 关 master，与 sshd 断开同机制，未入仓）：修复前=裸死+明文/.sids 残留（完整复现 ses 9fd46cc3 现场）→ 仅 handler=死于 EIO → handler+EIO 硬化=挂断后存活陪跑、agent 最终退出后完整收尾（压缩 .jsonl.gz、明文/.sids 清理、自然退出）。cpx 全量 133/133 通过
 

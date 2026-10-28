@@ -1020,7 +1020,7 @@ async function main(): Promise<void> {
   // 7z at rest（docs/COMPRESSION-DESIGN.md）：会话关闭，所有本运行产物 + 其
   // subagents 压缩为 .jsonl.7z —— 在 normalize/import 之前，sourcePath 一次
   // 定型为 .7z。同时给伴生 cc-session-meta 打 governed 标记（spec §4.4）：
-  // 字节流已经 cpx 落盘咽喉 redactor 全量清洗（server.ts dispatchEmit），
+  // 字节流已经 cpx 落盘入口 redactor 全量清洗（server.ts dispatchEmit），
   // lake 上传侧据此走直传快路径（免解压重洗重压）。
   const markGoverned = (sidRaw: string): void => {
     try {

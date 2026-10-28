@@ -119,7 +119,7 @@ export function isOrphanedProc(
 ): boolean {
   if (p.ppid == null) return false; // ppid 未知 → 保守非孤儿
   if (p.ppid === 1) {
-    // pid 1 有两种真身：① 容器以 cpx 作 entrypoint（`docker run … cpx …`）时
+    // pid 1 有两种真实身份：① 容器以 cpx 作 entrypoint（`docker run … cpx …`）时
     // pid 1 就是活着的 cpx-cli（proxy 的真父）；② 父死重挂后被 init/systemd
     // 收养。两者 ppid 都是 1，区分靠 pid 1 的 cmdline 是否 cpx 系进程——
     // cli 入口恒为 cpx-cli.ts / bin cpx（含品牌变体与 npm 件，文件名契约不换）。
