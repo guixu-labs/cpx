@@ -34,8 +34,8 @@ function writeLine(file: string, obj: object): void {
   fs.writeFileSync(file, JSON.stringify(obj) + '\n');
 }
 
-function sessionMeta(sid: string, framework: string, protocol: string): object {
-  return { x_lake: { schema: 'cc-session-meta', version: 1, data: { producer: 'cpx', framework, protocol, sid } } };
+function sessionMeta(sid: string, framework: string, protocol: string, legacyKey = false): object {
+  return { [legacyKey ? 'x_cannbay' : 'x_lake']: { schema: 'cc-session-meta', version: 1, data: { producer: 'cpx', framework, protocol, sid } } };
 }
 
 function runList() {
@@ -80,6 +80,14 @@ beforeAll(() => {
   writeLine(path.join(dir, 'cccccccc-0000-0000-0000-000000000000.jsonl'), { type: 'user' });
   fs.utimesSync(path.join(dir, 'cccccccc-0000-0000-0000-000000000000.jsonl'), T0, T0 + 7200);
 
+  // eeee：旧键 meta（x_cannbay，改名前存量捕获）——最旧，排序垫底
+  gz(path.join(dir, 'cpx-eeeeeeee-0000-0000-0000-000000000000.jsonl.gz'));
+  fs.utimesSync(path.join(dir, 'cpx-eeeeeeee-0000-0000-0000-000000000000.jsonl.gz'), T0, T0 - 3600);
+  fs.writeFileSync(
+    path.join(dir, 'cpx-eeeeeeee-0000-0000-0000-000000000000.meta.json'),
+    JSON.stringify(sessionMeta('eeeeeeee-0000-0000-0000-000000000000', 'opencode', 'anthropic', true)),
+  );
+
   // 噪声：空占位 + 调试产物
   fs.writeFileSync(path.join(dir, 'cpx-empty-placeholder.jsonl'), '');
   writeLine(path.join(dir, 'cpx-dddddddd-0000-0000-0000-000000000000.pretty.json'), { debug: true });
@@ -97,12 +105,13 @@ describe('cpx list', () => {
     expect(r.stdout).toContain(dir);
   });
 
-  it('lists sessions in mtime descending order (ccc → bbb → aaa)', () => {
+  it('lists sessions in mtime descending order (ccc → bbb → aaa → eee)', () => {
     const r = runList();
     expect(r.status).toBe(0);
     expect(orderOf(r.stdout, 'cccccccc', 'bbbbbbbb')).toBeLessThan(0);
     expect(orderOf(r.stdout, 'bbbbbbbb', 'aaaaaaaa')).toBeLessThan(0);
-    expect(r.stdout).toContain('共 3 个会话');
+    expect(orderOf(r.stdout, 'aaaaaaaa', 'eeeeeeee')).toBeLessThan(0);
+    expect(r.stdout).toContain('共 4 个会话');
   });
 
   it('merges plain/gz of the same stem into one live row and shows subagent count', () => {
@@ -121,6 +130,12 @@ describe('cpx list', () => {
     // 无 meta：framework/protocol 显示 -
     const aaa = lineOf(r.stdout, 'aaaaaaaa');
     expect(aaa).toMatch(/\s-\s+-\s+0\s+rest/);
+  });
+
+  it('旧键 meta（x_cannbay，改名前存量捕获）：框架/协议仍显示', () => {
+    const r = runList();
+    const eee = lineOf(r.stdout, 'eeeeeeee');
+    expect(eee).toMatch(/opencode\s+anthropic\s+0\s+rest/);
   });
 
   it('skips empty placeholders and .pretty.json debug artifacts', () => {

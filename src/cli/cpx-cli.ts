@@ -13,6 +13,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { sessionFilePath, sidsFilePath, resolveCapturePath, compressCaptureFile, readCaptureText, sessionMetaPath } from '../writer.ts';
+import { readEnvelopeWithLegacy } from '../envelope.ts';
 import { VERSION, VERSION_DISPLAY } from '../version.ts';
 import { redactString } from '../redactor.ts';
 import { parseOpencodeProvider, readAuthProvidersFromFile, readCustomProvidersFromRoots, resolveProviderIds, opencodeConfigRoots, readModelsDevUpstreams } from './opencode-providers';
@@ -680,8 +681,8 @@ function readSessionMetaFor(stem: string, sid: string): { framework: string | nu
   for (const c of candidates) {
     try {
       const xb0 = JSON.parse(fs.readFileSync(c, 'utf-8'));
-      const xb = xb0?.x_lake;
-      if (xb?.schema === 'cc-session-meta' && xb.data && typeof xb.data === 'object') {
+      const xb = readEnvelopeWithLegacy(xb0);
+      if (xb?.schema === 'cc-session-meta') {
         return {
           framework: typeof xb.data.framework === 'string' ? xb.data.framework : null,
           protocol: typeof xb.data.protocol === 'string' ? xb.data.protocol : null,
@@ -1027,8 +1028,8 @@ async function main(): Promise<void> {
       const metaPath = sessionMetaPath(sidRaw);
       if (!fs.existsSync(metaPath)) return;
       const meta = JSON.parse(fs.readFileSync(metaPath, 'utf-8'));
-      const xb = meta?.x_lake;
-      if (xb?.schema === 'cc-session-meta' && xb.data && xb.data.producer === 'cpx') {
+      const xb = readEnvelopeWithLegacy(meta);
+      if (xb?.schema === 'cc-session-meta' && xb.data.producer === 'cpx') {
         xb.data.governed = true;
         fs.writeFileSync(metaPath, JSON.stringify(meta, null, 2) + '\n');
       }

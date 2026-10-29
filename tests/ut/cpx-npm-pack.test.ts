@@ -7,7 +7,7 @@
 // See LICENSE in the root of the software repository for the full text of the License.
 
 // npm 发布就绪 IT（context-cpx）：发布到公共 registry 前，从 npm 的真实视角验证——
-//   ① `npm pack --dry-run`（零网络零落盘）：bin 启动器 / 源码 / LICENSE / docs 在包内，tests / 仓内 wrapper / lockfile 排除
+//   ① `npm pack --dry-run`（零网络零落盘）：bin 启动器 / 源码 / LICENSE 在包内，tests / 仓内 wrapper / lockfile 排除
 //   ② package.json 发布就绪：无 private、包名 context-cpx、版本与单一版本源 src/version.ts 同值、bin cpx → bin/cpx.mjs
 //   ③ bin 启动器实跑冒烟：`node bin/cpx.mjs --version` 经 node --import tsx 起 cpx-cli，
 //      输出 cpx v<版本> 与单一源一致（npm 全局装后用户敲 `cpx --version` 的等价路径）
@@ -51,7 +51,7 @@ function packDryRun(): PackFile[] {
 }
 
 describe('npm publish readiness (context-cpx)', () => {
-  it('产物含运行必需文件：bin 启动器 / 源码 / LICENSE / docs / CHANGELOG', () => {
+  it('产物含运行必需文件：bin 启动器 / 源码 / LICENSE / CHANGELOG', () => {
     const files = packDryRun().map((f) => f.path);
     for (const must of [
       'bin/cpx.mjs',
@@ -60,7 +60,6 @@ describe('npm publish readiness (context-cpx)', () => {
       'src/version.ts',
       'scripts/postinstall.mjs',
       'LICENSE',
-      'docs/DESIGN.md',
       'CHANGELOG.md',
     ]) {
       expect(files, `缺少发布必需文件: ${must}`).toContain(must);

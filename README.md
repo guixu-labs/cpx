@@ -153,7 +153,7 @@ cpx 对 agent 完全透明：转发请求与上游响应逐字节透传、密钥
 
 insight 导入与长期 serving 均直读 verbatim（`.jsonl.7z` / `.jsonl.gz` 透明解压、`cpx-` 前缀自动剥）。盘上历史 norm/ 件不受影响（不迁移不删除）。
 
-每行是**扩展 claude-format**：claude 原生信封（`type`/`timestamp`/`message`）冻结，扩展数据进带 `(schema, version)` 声明的扩展命名空间（见 docs 下的格式契约文档）——wire 轮次（latency/ttft/请求参数）、输入标记、会话 meta、子代理 meta。格式契约详见 （格式契约文档，位于 docs/ 下）。
+每行是**扩展 claude-format**：claude 原生信封（`type`/`timestamp`/`message`）冻结，扩展数据进带 `(schema, version)` 声明的扩展命名空间——wire 轮次（latency/ttft/请求参数）、输入标记、会话 meta、子代理 meta。
 
 ## 导入分析
 
@@ -188,12 +188,6 @@ API key / 凭据永不落盘。headers 本就不落盘；清洗的是**内容级
 ├── scripts/
 │   ├── postinstall.mjs      # 安装钩子：Tab 补全自动装配
 │   └── pack-cannbot.mjs     # cannbot 品牌变体打包（staging 变换 + npm pack）
-├── docs/                    # 设计文档
-│   ├── DESIGN.md            #   总体设计（架构 / 决策 / 边界）
-│   ├── OPENCODE-DESIGN.md   #   opencode 适配（wire 实证 / provider 发现 / 前缀路由）
-│   ├── CANNBOT-DESIGN.md    #   CANNBot（cannbot CLI）适配
-│   ├── CODEX-DESIGN.md      #   Codex（Responses API）适配
-│   └── COMPRESSION-DESIGN.md#   捕获文件 7z at rest
 ├── src/
 │   ├── server.ts            # 捕获代理 server（路由 / 透传 / tee / dispatchEmit 统一入口）
 │   ├── cli/cpx-cli.ts       # cpx 编排器（profile / 注入 / 退出路径）
