@@ -16,15 +16,15 @@ import {
 } from './compression';
 
 // 数据目录迁移：cannbot 时代（≤0.1.11）的 ~/.cannbot-insight 首启原子改名到
-// ~/.context-insight（与 insight 侧启动器同款幂等逻辑；显式 CONTEXT_PROXY_DIR
-// 覆盖 = 用户自管，不掺和；两目录并存沿用新目录不动旧目录）。
+// ~/.context-insight。仅当「旧在、新不在」时执行；显式 CONTEXT_PROXY_DIR
+// 覆盖 = 用户自管目录，不掺和。等路径 = cannbot 品牌变体（pack-cannbot
+// 打包期翻转了新目录字面量）——垫片天然 no-op，cannbot 老用户目录原地不动。
 function migrateLegacyDataRoot(): void {
   if (process.env.CONTEXT_PROXY_DIR) return;
   const home = os.homedir();
   const legacy = path.join(home, '.cannbot-insight');
   const next = path.join(home, '.context-insight');
   try {
-    // 等路径 = cannbot 品牌变体（pack-cannbot 打包期翻转了新目录字面量）——迁移无意义
     if (legacy === next || !fs.existsSync(legacy) || fs.existsSync(next)) return;
     fs.renameSync(legacy, next);
     console.error(`[cpx] 数据目录已迁移: ${legacy} → ${next}`);

@@ -14,7 +14,7 @@
 //   → localhost:21025 兜底（单人本机默认端口）
 // 登记目录锚定与写侧（start.sh / npm 启动器）严格一致：dirname of
 // CONTEXT_PROXY_DIR → CONTEXT_INSIGHT_HOME → ~/.context-insight
-// （'.context-insight' 字面量是 insight pack-context 品牌翻转点，与
+// （'.context-insight' 字面量是 insight pack-cannbot 品牌翻转点，与
 // src/lib/lake/server-config.ts 同口径）。
 // 契约细节见 insight docs/design/multi-user/design.md。
 import fs from 'node:fs';
