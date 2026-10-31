@@ -42,7 +42,7 @@ npm install -g cannbot-proxy      # 同一工具的 CANNBot 品牌变体（命�
 **方式二：源码安装**
 
 ```bash
-git clone <本仓地址> && cd packages/cpx
+git clone <本仓地址> && cd cpx
 ./install.sh
 ```
 

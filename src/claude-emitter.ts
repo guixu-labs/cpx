@@ -401,6 +401,8 @@ export function emit(rec: ProxyRecord): void {
     // 归属优先级：x-claude-code-agent-id 头（逻辑成员身份，续会继承）> 任务
     // prompt md5（现状分桶）。按头分桶时续会流直接落入原成员文件——原生
     // harness 把续会记回同一 agent 文件，此处分桶与之对齐
+    // （claudeAgentId 类型即 string | null，入口 server.ts 已把 undefined 归一，
+    //   消费侧不再需要 ?? null——运行时 undefined 与 null 同走 falsy 分支）
     const agentId = rec.request.claudeAgentId;
     let subId: string | null = agentId ? subIdForAgentId.get(agentId) ?? null : null;
     if (!subId) {

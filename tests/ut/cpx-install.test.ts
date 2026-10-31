@@ -96,3 +96,32 @@ describe('proxy/install.sh standalone installer', () => {
     }
   }, 90_000);
 });
+
+// PR#1 审查意见回归锁：README「方式二：源码安装」的 cd 目标必须是真实克隆
+// 产生的目录名（仓库名，git clone 默认目标 = URL 末段），而不是 npm 包名——
+// 曾写成 `cd context-cpx`，按文档操作即 no such directory。用例按文档原样
+// 真实克隆本仓（本地传输、无网络），再验证 cd 目标存在且 install.sh 可达。
+describe('README 源码安装指引（clone 目录名 = 仓库名）', () => {
+  it('git clone 后按 README 的 cd 目标能进入仓内并看到 install.sh', () => {
+    const readme = fs.readFileSync(path.join(PROXY_DIR, 'README.md'), 'utf8');
+    const m = readme.match(/git clone <本仓地址>\s*&&\s*cd (\S+)/);
+    expect(m).not.toBeNull();
+    const cdTarget = m![1];
+
+    const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'cpx-readme-clone-'));
+    try {
+      // 不指定目标目录：git 按源路径末段命名（与真 URL 克隆同规则）
+      const r = spawnSync('git', ['clone', '--quiet', PROXY_DIR], {
+        encoding: 'utf8',
+        cwd: tmpRoot,
+        timeout: 120_000,
+      });
+      expect(r.status).toBe(0);
+      const cloned = path.join(tmpRoot, cdTarget);
+      expect(fs.existsSync(cloned)).toBe(true);
+      expect(fs.existsSync(path.join(cloned, 'install.sh'))).toBe(true);
+    } finally {
+      fs.rmSync(tmpRoot, { recursive: true, force: true });
+    }
+  }, 150_000);
+});
