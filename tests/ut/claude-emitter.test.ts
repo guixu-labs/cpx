@@ -564,6 +564,58 @@ describe('claude-emitter: agent-id 头分桶（续会归队）', () => {
   });
 });
 
+// ── PR#1 审查意见回归锁：消费侧 ?? null 是空操作（运行时 undefined ≡ null）──
+// claudeAgentId 类型即 string | null（types.ts），入口 server.ts 已把缺失头
+// 归一成 null；本组用例在运行时直接注入 undefined，锁定它与 null 走同一
+// 任务分桶分支（同成员文件、单一 meta）——证明消费侧 ?? null 可安全移除，
+// 且未来重构不得让 undefined 漏成独立桶。
+describe('claude-emitter: agent-id 头 undefined 与 null 同路（消费侧无需兜底）', () => {
+  const SID4 = 'cpx-agent-id-undef-equiv';
+  const dir4 = path.join(tmpDir, SID4, 'subagents');
+  const TASK_EQ = '等价性任务：无头与 undefined 头必须同桶-E';
+  const base4 = (over: Record<string, unknown>) => ({
+    sid: SID4,
+    protocol: 'anthropic',
+    receivedAt: 1_000,
+    completedAt: 2_000,
+    latencyMs: 1_000,
+    ttftMs: null,
+    request: { path: '/v1/messages', model: 'glm-5.2', body: {}, claudeAgentId: null, ...over.request },
+    response: { status: 200, model: 'glm-5.2', stop_reason: null, content: [{ type: 'text', text: 'ok' }], usage: { input_tokens: 1, output_tokens: 1 } },
+    ...over,
+  });
+  const subRec4 = (agentId: string | null | undefined, reply: string) => base4({
+    request: {
+      claudeAgentId: agentId,
+      body: {
+        system: [{ type: 'text', text: 'main system cc_is_subagent=true' }],
+        tools: [{ name: 'Read' }],
+        messages: [{ role: 'user', content: [{ type: 'text', text: TASK_EQ }] }],
+      },
+    },
+    response: { status: 200, model: 'glm-5.2', stop_reason: null, content: [{ type: 'text', text: reply }], usage: { input_tokens: 1, output_tokens: 1 } },
+  });
+
+  beforeAll(() => {
+    emit(subRec4(null, '回:null-轮'));
+    emit(subRec4(undefined as unknown as string, '回:undefined-轮'));
+  });
+
+  it('undefined 头与 null 头落入同一成员文件（不裂桶、不进 sub-unknown）', () => {
+    const files = fs.readdirSync(dir4).filter(f => f.endsWith('.jsonl'));
+    expect(files.length).toBe(1);
+    const rows = readJsonl(path.join(dir4, files[0]));
+    expect(JSON.stringify(rows)).toContain('回:null-轮');
+    expect(JSON.stringify(rows)).toContain('回:undefined-轮');
+    expect(files[0]).not.toContain('sub-unknown');
+  });
+
+  it('meta 仍只写一份（undefined 轮不新增 meta）', () => {
+    const metas = fs.readdirSync(dir4).filter(f => f.endsWith('.meta.json'));
+    expect(metas.length).toBe(1);
+  });
+});
+
 // ── 异步派发 meta 回填 ──
 // 真机后台 Agent（requestShape:background）实测顺序：子代理首轮请求先于
 // 父响应落盘（父 turn 仍在流式输出）→ 首写 meta 三字段 null；父响应带
