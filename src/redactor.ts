@@ -48,13 +48,24 @@ function maskAuthValue(v: string): string {
   return maskSecret(v);
 }
 
-// 字符串层正则组：按厂家键特征 + 常见回显形态打码。全部带长度阈值，
+// 字符串层正则组：按厂家键特征 + 常见回显形态打码。
 // 未命中的普通文本保持原引用（性能：大 body 只在命中处新建字符串）。
 const STRING_RULES: Array<{ re: RegExp; build: (m: RegExpMatchArray) => string }> = [
   {
-    // Bearer/Basic 凭据（配置 dump、错误消息、curl 回显）
-    re: /\b(Bearer|Basic)\s+([A-Za-z0-9._~+/=-]{16,})/g,
+    // 明确的 Authorization 头允许短凭据，并覆盖大小写变体。
+    re: /\b(Authorization\s*[:=]\s*)(Bearer|Basic|Token)\s+([A-Za-z0-9._~+/=-]+)(?![A-Za-z0-9._~+/=-]|…)/gi,
+    build: m => `${m[1]}${m[2]} ${maskSecret(m[3])}`,
+  },
+  {
+    // 未带 Authorization 前缀时，保留 Bearer/Basic 仅匹配长值的历史规则；
+    // 短 Token/Basic 可能是常见英文短语，因此要求 header 上下文。
+    re: /\b(Bearer|Basic)\s+([A-Za-z0-9._~+/=-]{16,})(?![A-Za-z0-9._~+/=-]|…)/gi,
     build: m => `${m[1]} ${maskSecret(m[2])}`,
+  },
+  {
+    // 裸配置字段回显：字段名明确指向凭据，因此短值也必须打码。
+    re: /\b(api[_-]?key|apikey)\b(\s*[:=]\s*)(["']?)([A-Za-z0-9._~+/=-]+)\3(?![A-Za-z0-9._~+/=-]|…)/gi,
+    build: m => `${m[1]}${m[2]}${m[3]}${maskSecret(m[4])}${m[3]}`,
   },
   {
     // env 赋值回显：ANTHROPIC_API_KEY=xxx / "DASHSCOPE_API_KEY":"xxx"。

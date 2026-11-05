@@ -71,6 +71,24 @@ describe('字符串层：内容回显打码', () => {
   it('Bearer 凭据：保留 scheme 只打码凭据', () => {
     expect(redactString(`curl -H "Authorization: Bearer ${OPENAI_KEY}" https://api.example.com`))
       .toBe(`curl -H "Authorization: Bearer ${maskSecret(OPENAI_KEY)}" https://api.example.com`);
+    const tokenAuth = 'opaqueCredential_0123456789abcdef';
+    expect(redactString(`Authorization: Token ${tokenAuth}`))
+      .toBe(`Authorization: Token ${maskSecret(tokenAuth)}`);
+    expect(redactString('Authorization: Token x')).toBe('Authorization: Token ****');
+    expect(redactString('authorization: token abc123')).toBe('authorization: token ****');
+    expect(redactString('authorization: bearer abc123')).toBe('authorization: bearer ****');
+    expect(redactString('Token usage increased')).toBe('Token usage increased');
+    expect(redactString('Token count and Token limit')).toBe('Token count and Token limit');
+    expect(redactString('Basic usage instructions')).toBe('Basic usage instructions');
+  });
+
+  it('裸 api_key 配置回显打码，普通 token 计数保留', () => {
+    const opaqueKey = 'opaqueCredential_0123456789abcdef';
+    expect(redactString(`api_key=${opaqueKey}`)).toBe(`api_key=${maskSecret(opaqueKey)}`);
+    expect(redactString(`API-KEY: ${opaqueKey}`)).toBe(`API-KEY: ${maskSecret(opaqueKey)}`);
+    expect(redactString(`api_key="${opaqueKey}"`)).toBe(`api_key="${maskSecret(opaqueKey)}"`);
+    expect(redactString('api_key=short')).toBe('api_key=****');
+    expect(redactString('max_tokens=4096')).toBe('max_tokens=4096');
   });
 
   it('env 赋值回显：ANTHROPIC_API_KEY=… / "DASHSCOPE_API_KEY":"…"', () => {
@@ -151,7 +169,7 @@ describe('redactRecord + 落盘数据流', () => {
           system: [{ type: 'text', text: `You are Claude. cc_version=2.1.234.467;` }],
           messages: [
             { role: 'user', content: '帮我看看环境变量' },
-            { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'tu_1', content: `ANTHROPIC_API_KEY=${ANTHROPIC_KEY}\nOPENAI_API_KEY="${OPENAI_KEY}"` }] },
+            { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'tu_1', content: `ANTHROPIC_API_KEY=${ANTHROPIC_KEY}\nOPENAI_API_KEY="${OPENAI_KEY}"\napi_key=opaqueCredential_0123456789abcdef` }] },
           ],
         },
       },
@@ -159,7 +177,7 @@ describe('redactRecord + 落盘数据流', () => {
         status: 200,
         model: 'glm-4.7',
         stop_reason: 'end_turn',
-        content: [{ type: 'text', text: `你的配置里有 ${ANTHROPIC_KEY}，建议轮换` }],
+        content: [{ type: 'text', text: `你的配置里有 ${ANTHROPIC_KEY}，Authorization: Token opaqueCredential_0123456789abcdef，建议轮换` }],
         usage: { input_tokens: 10, output_tokens: 5 },
       },
       xSessionId: null,
@@ -175,6 +193,7 @@ describe('redactRecord + 落盘数据流', () => {
     expect(raw).not.toContain(ANTHROPIC_KEY);
     expect(raw).not.toContain(OPENAI_KEY);
     expect(raw).not.toContain(GEMINI_KEY);
+    expect(raw).not.toContain('opaqueCredential_0123456789abcdef');
     // 清洗不影响正常字段：版本号、usage、system 提示原文保留
     expect(raw).toContain('cc_version=2.1.234.467');
     expect(raw).toContain('"input_tokens":10');
