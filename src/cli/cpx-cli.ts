@@ -976,9 +976,14 @@ async function main(): Promise<void> {
     env: { ...process.env, NO_PROXY: noProxy, no_proxy: noProxy, ...env, CPX_SESSION_ID: sid },
   });
 
+  let agentExitCode = 1;
   await new Promise<void>((resolve) => {
-    child.on('exit', () => resolve());
-    child.on('error', (e) => { log(`agent error: ${e.message}`); resolve(); });
+    child.once('exit', (code, signal) => {
+      const signalNumber = signal ? os.constants.signals[signal] : undefined;
+      agentExitCode = code ?? (signalNumber ? 128 + signalNumber : 1);
+      resolve();
+    });
+    child.once('error', (e) => { log(`agent error: ${e.message}`); agentExitCode = 1; resolve(); });
   });
 
   cleanup();
@@ -1022,7 +1027,7 @@ async function main(): Promise<void> {
 
   if (produced.length === 0) {
     log('no capture file produced — nothing to import');
-    process.exit(0);
+    process.exit(agentExitCode);
   }
 
   // 7z at rest（docs/COMPRESSION-DESIGN.md）：会话关闭，所有本运行产物 + 其
@@ -1086,7 +1091,9 @@ async function main(): Promise<void> {
     log(`✅ imported → opening ${lastUrl}`);
     openBrowser(lastUrl);
   }
-  process.exit(0);
+  // cpx's status reports the wrapped agent outcome, independently of capture
+  // and import success. Callers using `set -e` must handle agent failures.
+  process.exit(agentExitCode);
 }
 
 main().catch((e) => { log(e instanceof Error ? e.message : String(e)); process.exit(1); });

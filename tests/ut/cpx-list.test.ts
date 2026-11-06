@@ -174,8 +174,8 @@ describe('cpx list', () => {
       env: { ...process.env, CONTEXT_PROXY_DIR: captureDir() },
     });
     // 非已知子命令 → 当作 agent 命令 spawn；本机无此命令 ENOENT，会话干净
-    // 收尾（exit 0、零捕获），不影响已有捕获条目
-    expect(r.status).toBe(0);
+    // child 的 ENOENT 退出码透传为 1；零捕获只影响导入，不吞掉失败状态
+    expect(r.status).toBe(1);
     expect(r.stderr).toContain('ENOENT');
     expect(r.stderr).not.toContain('captures dir');
   }, 90_000);

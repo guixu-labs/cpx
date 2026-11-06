@@ -141,6 +141,8 @@ cpx 对 agent 完全透明：转发请求与上游响应逐字节透传、密钥
 | `cpx completion [bash\|zsh] [--install]` | 打印/安装 Tab 补全脚本（安装时已自动装配，此处为手动修复入口） |
 | `cpx --version \| -v` | 版本号 + 生效代码路径（多仓共存时确认当前副本）；版本源在 `src/version.ts` |
 
+`cpx` 的退出码表示被包装 agent 的退出结果：普通退出码原样透传，信号终止映射为 shell 惯例 `128 + signal number`。捕获压缩或导入成功不会覆盖 agent 的非零退出码；在 `set -e` 脚本中调用时，应显式处理该状态（例如 `if cpx ...; then ...; else status=$?; fi`）。
+
 > **cpx 保留参数**（任意位置被 cpx 拦截消费，绝不透传 agent）：`--agent` 及若干历史保留 flag（`--autoupload` `--submitter` `--category` `--desc` `--opgen` `--baseline`，静默拦截防误传 agent）；其余参数原样转发给 agent。
 
 ## 数据落点与格式
