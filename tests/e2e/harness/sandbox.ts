@@ -48,10 +48,13 @@ export interface Sandbox {
   cleanup(): void;
 }
 
-/** 出口网络代理 env（server.ts 的 EnvHttpProxyAgent 触发面）——子进程必须剥净。 */
+/** 出口网络代理 env（server.ts 的 EnvHttpProxyAgent 触发面）——子进程必须剥净。
+ *  NO_PROXY / no_proxy 一并剥：开发机残留的绕过清单若漏进子进程，会让「本跳
+ *  恒直连 127.0.0.1 桩」的确定性承诺出现旁路（与注释「NO_PROXY 同剥」对齐）。 */
 const PROXY_ENV_KEYS = [
   'HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY',
   'http_proxy', 'https_proxy', 'all_proxy',
+  'NO_PROXY', 'no_proxy',
 ] as const;
 
 /** agent 端点发现变量（上游解析链的输入）：默认剥除保确定性，用例按需

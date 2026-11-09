@@ -68,9 +68,24 @@ resolve_vitest() {
   fi
 }
 
+# 自愈安装目标：与 resolve_vitest 的兄弟名探测保持一致（monorepo 布局 insight /
+# 独立 checkout 名 context-insight），命中哪个兄弟仓就替哪个装——杜绝「探测
+# 认双名、安装只认 insight」的硬编码漂移。
+resolve_insight_dir() {
+  if [ -f ../insight/package.json ]; then
+    printf '%s\n' '../insight'
+  elif [ -f ../context-insight/package.json ]; then
+    printf '%s\n' '../context-insight'
+  else
+    return 1
+  fi
+}
+
 if ! resolve_vitest; then
   echo "==> [cpx] insight deps missing (cpx borrows its vitest), installing..."
-  (cd ../insight && npm install --no-audit --no-fund) || exit 1
+  INSIGHT_DIR="$(resolve_insight_dir)" \
+    || { echo "no sibling repo found (need insight/ or context-insight/ next to cpx) to borrow vitest from" >&2; exit 1; }
+  (cd "$INSIGHT_DIR" && npm install --no-audit --no-fund) || exit 1
   resolve_vitest || { echo "vitest still missing after npm install" >&2; exit 1; }
 fi
 
