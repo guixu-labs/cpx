@@ -140,7 +140,7 @@ export function parseOpencodeProvider(agentArgs: string[]): string | null {
       const slash = m.indexOf('/');
       return slash > 0 ? m.slice(0, slash) : null;
     }
-    const eq = agentArgs[i].match(/^-m=(.+)$/);
+    const eq = agentArgs[i].match(/^(?:-m|--model)=(.+)$/);
     if (eq) {
       const m = eq[1];
       const slash = m.indexOf('/');

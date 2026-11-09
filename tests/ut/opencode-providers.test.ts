@@ -232,6 +232,9 @@ describe('resolveProviderIds', () => {
       .toEqual(['gateway']);
     expect(parseOpencodeProvider(['-m=example-cn/model-a2'])).toBe('example-cn');
     expect(parseOpencodeProvider(['--model', 'gateway/model-a1'])).toBe('gateway');
+    expect(parseOpencodeProvider(['--model=gateway/model-a1'])).toBe('gateway');
+    expect(resolveProviderIds({ profile: 'opencode', agentArgs: ['--model=gateway/model-a1'], authProviders: [], customProviders: {} }))
+      .toEqual(['gateway']);
   });
   it('cannbot 恒含内建 cannbot provider', () => {
     expect(resolveProviderIds({ profile: 'cannbot', agentArgs: [], authProviders: [], customProviders: {} }))
