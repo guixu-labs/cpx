@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Added
+- 【E2E 测试框架（insight 架构同款）】`tests/e2e/` 收编为 harness + spec 两层：`harness/` 六件套（constants 单一事实源 / sandbox 环境隔离五件套 / upstream-stub 三协议剧本桩+请求台账 / fake-agent 三标准件 / capture 断言+验收哨兵 / session 旅程驱动），spec 一律引用不自带。既有 8 个 ad-hoc e2e 中 7 个收编（cannbot-pack 为产物审计不涉进程，保持原样），环境纪律统一补齐（出口代理剥净、agent 端点发现变量默认剥除、XDG 配置面隔离）
+- 【协议旅程补全】新增三协议全链路 spec：anthropic（流式+非流，sid 头路由 vs 钉定占位清理的双向证明）、responses（codex 通道 thinking/text/tool_use 三态块）；透传保真 + 密钥零泄漏成对断言（上游台账逐字节对账 + 认证头到达 + 捕获全文零机密）；会话生命周期退出链（.sids manifest 消费 → 7z at-rest + governed 标记 → mock insight 导入契约）；e2e 覆盖 8 文件 32 用例 → 12 文件 37 用例
+- 【验收哨兵】claude-jsonl 消费契约哨兵（每行可解析 + 形状齐备 + x_lake 声明信封——insight 零改动消费的生产者侧锁）随所有旅程 spec 生效
+- 【泄漏进程不变量】`run-tests.sh e2e` 收尾 pgrep 自查本仓 `src/server.ts` 零存活（fail-fast，防「用例全绿但机器漏僵尸代理」的静默劣化）
+- 【一条命令门禁】`npm test` = ut + e2e 全覆盖（原 `test:all` 退役，新增 `test:ut` 快速回路）
+- 【套件架构文档】`tests/e2e/README.md`：真栈映射表、harness 清单、哨兵语义、spec 矩阵、已知陷阱（responses 转发剥 /v1、vitest worker 死锁、at-rest .7z 等）
+
 ### Fixed
 - 【兄弟仓路径可移植性】`writer-compression` 源级锁硬编码 `../insight`，独立 checkout 名 `context-insight` 下必红——双名探测 + 缺席 skipIf（run-tests.sh 的 vitest 借用同步补第二候选）
 

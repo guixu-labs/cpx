@@ -1,7 +1,7 @@
 // Copyright (c) 2025-2026 Huawei Technologies Co., Ltd.
-// This program is free software: you can redistribute it and/or modify it under the terms of
+// This program is free software; you can redistribute it and/or modify it under the terms and conditions of
 // CANN Open Software License Agreement Version 2.0 (the "License").
-// Please refer to the License for details. You may not use this file except in compliance with the License.
+// You may refer to the License for details. Please do not use this file except in compliance with the License.
 // THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
 // INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT OF MERCHANTABILITY OR FITNESS FOR A PARTICULAR PURPOSE.
 // See LICENSE in the root of the software repository for the full text of the License.
@@ -10,32 +10,30 @@
 // opencode 2.x 客户端-服务端架构下，TUI 经 service.json 连接常驻共享后台服务，
 // LLM 调用由服务进程发出——不在 cpx 子进程树内，读不到注入的
 // OPENCODE_CONFIG_CONTENT → 流量直连上游、捕获 0 字节。修复：探测到
-// --standalone（help 定义行）后注入，让客户端改用私有服务。
-// 假 agent 模拟二进制能力面（不真跑 opencode，help fixture 复刻 2.0.18 真实
-// 形态），端到端断言最终 spawn 的 argv 与注入内容：
-//   ① 2.x TUI（无参）→ --standalone 前置；注入原语不变（回归）
-//   ② 2.x 子命令 run → 紧跟子命令后（实测 2.0.18：前置于 run 报
-//      Unrecognized flag，位置敏感是本修复的核心约束）
-//   ③ 2.x serve 子命令：help 仅有 --print-logs 描述里的行中提及
+// --standalone（help 输出的定义行，行首锚定）即前置注入。
+//
+// 七形态全覆盖（help fixture 复刻 opencode 2.0.18 / 1.x 输出）：
+//   ① 2.x TUI（无参）→ 前置
+//   ② 2.x 子命令 run → 紧跟子命令后（位置敏感：前置 run 报 Unrecognized flag）
+//   ③ 2.x serve → 不注入——help 里只有行中提及
 //      "(server logs require --standalone)"——朴素包含匹配会误判为支持，
 //      必须行首锚定定义行；此处断言不注入
 //   ④ 2.x 根 flag（-s continue）→ 前置
 //   ⑤ 2.x 目录位置参数 → 前置
 //   ⑥ 1.x 形态（无该 flag）→ 不注入（未知 flag 令其打 help 退出零捕获）
+//   ⑦ 用户已显式传入 --standalone → 原样返回不重复注入
+// harness 侧：沙箱（XDG 三目录隔离 opencode 配置读取面）+ runCpx；help
+// fixture 与应答 agent 是测试素材，保留本地。
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
+import { createSandbox, type Sandbox } from './harness/sandbox';
+import { runCpx } from './harness/session';
 
-const PROXY_ROOT = path.resolve(__dirname, '../../');
-const WRAPPER = path.join(PROXY_ROOT, 'cpx-cli');
-
-let TMP: string;
+let sandbox: Sandbox;
 let CFG: string;
 let DATA: string;
 let CACHE: string;
-let CAPTURES: string;
 let HELP_V2: string; // 2.x 形态 help fixture 目录
 let HELP_V1: string; // 1.x 形态 help fixture 目录
 let AGENT_V2: string;
@@ -103,14 +101,10 @@ function writeAgentScript(file: string, helpDir: string): void {
 }
 
 beforeAll(() => {
-  TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'cpx-standalone-it-'));
-  CFG = path.join(TMP, 'config');
-  DATA = path.join(TMP, 'data');
-  CACHE = path.join(TMP, 'cache');
-  CAPTURES = path.join(TMP, 'captures');
-  // 缓存目录钉死到空夹具：不读开发机真实的 ~/.cache/opencode（确定性，
-  // 与另两个 opencode e2e 同款纪律）
-  fs.mkdirSync(CACHE, { recursive: true });
+  sandbox = createSandbox('cpx-standalone-it-');
+  CFG = sandbox.config;
+  DATA = sandbox.data;
+  CACHE = sandbox.cache;
   // 用户配置：自定义 gateway provider（自定义 provider 捕获 IT 同款形态）
   fs.mkdirSync(path.join(CFG, 'opencode'), { recursive: true });
   fs.writeFileSync(path.join(CFG, 'opencode', 'opencode.jsonc'), [
@@ -130,132 +124,117 @@ beforeAll(() => {
   ].join('\n'));
   fs.mkdirSync(path.join(DATA, 'opencode'), { recursive: true });
   fs.writeFileSync(path.join(DATA, 'opencode', 'auth.json'), JSON.stringify({ 'example-cn': { type: 'api', key: 'k' } }));
-  HELP_V2 = path.join(TMP, 'help-v2');
+  HELP_V2 = path.join(sandbox.root, 'help-v2');
   fs.mkdirSync(HELP_V2, { recursive: true });
   fs.writeFileSync(path.join(HELP_V2, 'root.txt'), ROOT_HELP);
   fs.writeFileSync(path.join(HELP_V2, 'run.txt'), RUN_HELP);
   fs.writeFileSync(path.join(HELP_V2, 'serve.txt'), SERVE_HELP);
-  HELP_V1 = path.join(TMP, 'help-v1');
+  HELP_V1 = path.join(sandbox.root, 'help-v1');
   fs.mkdirSync(HELP_V1, { recursive: true });
   fs.writeFileSync(path.join(HELP_V1, 'root.txt'), ROOT_HELP_V1);
-  AGENT_V2 = path.join(TMP, 'fake-agent-v2');
-  AGENT_V1 = path.join(TMP, 'fake-agent-v1');
+  AGENT_V2 = path.join(sandbox.bin, 'fake-agent-v2');
+  AGENT_V1 = path.join(sandbox.bin, 'fake-agent-v1');
   writeAgentScript(AGENT_V2, HELP_V2);
   writeAgentScript(AGENT_V1, HELP_V1);
 });
 
 afterAll(() => {
-  try { fs.rmSync(TMP, { recursive: true, force: true }); } catch { /* best-effort */ }
+  sandbox.cleanup();
 });
 
-function runCpx(agent: string, agentArgs: string[], dump: string) {
-  return spawnSync('bash', [WRAPPER, '--agent', 'opencode', '--', agent, ...agentArgs], {
-    encoding: 'utf-8',
-    timeout: 120_000,
+function run(agent: string, agentArgs: string[], dump: string) {
+  return runCpx(sandbox, ['--agent', 'opencode', '--', agent, ...agentArgs], {
     env: {
-      ...process.env,
       XDG_CONFIG_HOME: CFG,
       XDG_DATA_HOME: DATA,
       XDG_CACHE_HOME: CACHE,
-      CONTEXT_PROXY_DIR: CAPTURES,
-      // 钉死不可达：探测必败 → 不机会主义导入开发机在跑的真 insight、不开浏览器
-      CONTEXT_CPX_INSIGHT_BASE: 'http://127.0.0.1:1',
       FAKE_AGENT_DUMP: dump,
     },
   });
 }
 
 function readArgv(dump: string): string[] {
-  return fs.readFileSync(`${dump}.argv`, 'utf-8').split('\n').filter((l) => l !== '');
+  return fs.readFileSync(`${dump}.argv`, 'utf8').split('\n').filter((l) => l !== '');
 }
 
 // 拦截原语回归：OPENCODE_CONFIG_CONTENT 注入结构不变（provider baseURL →
 // 本机代理 /<providerId>/ 前缀路由）
 function assertInjectionIntact(dump: string): void {
-  const injected = JSON.parse(fs.readFileSync(`${dump}.injected`, 'utf-8'));
+  const injected = JSON.parse(fs.readFileSync(`${dump}.injected`, 'utf8'));
   expect(injected?.provider?.gateway?.options?.baseURL).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/gateway\/$/);
   expect(injected?.provider?.['example-cn']?.options?.baseURL).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/example-cn\/$/);
 }
 
 describe('cpx opencode --standalone 特性探测注入（2.x 捕获回归 IT）', () => {
-  it('① 2.x TUI（无参）：--standalone 前置；注入原语不变', () => {
-    const dump = `${TMP}/d1`;
-    const r = runCpx(AGENT_V2, [], dump);
-    const out = `${r.stdout}\n${r.stderr}`;
-    expect(r.status, `cpx output:\n${out}`).toBe(0);
+  it('① 2.x TUI（无参）：--standalone 前置；注入原语不变', async () => {
+    const dump = `${sandbox.root}/d1`;
+    const r = await run(AGENT_V2, [], dump);
+    expect(r.code, `cpx output:\n${r.output}`).toBe(0);
     expect(readArgv(dump)).toEqual(['--standalone']);
     assertInjectionIntact(dump);
-    expect(out).toContain('--standalone 已注入');
+    expect(r.output).toContain('--standalone 已注入');
   }, 120_000);
 
-  it('② 2.x 子命令 run：--standalone 紧跟子命令后（位置敏感约束）', () => {
-    const dump = `${TMP}/d2`;
-    const r = runCpx(AGENT_V2, ['run', 'hello world'], dump);
-    const out = `${r.stdout}\n${r.stderr}`;
-    expect(r.status, `cpx output:\n${out}`).toBe(0);
+  it('② 2.x 子命令 run：--standalone 紧跟子命令后（位置敏感约束）', async () => {
+    const dump = `${sandbox.root}/d2`;
+    const r = await run(AGENT_V2, ['run', 'hello world'], dump);
+    expect(r.code, `cpx output:\n${r.output}`).toBe(0);
     // 前置于 run（['--standalone', 'run', …]）实测报 Unrecognized flag——断言
     // 最终 argv 的插入位置正确
     expect(readArgv(dump)).toEqual(['run', '--standalone', 'hello world']);
     assertInjectionIntact(dump);
   }, 120_000);
 
-  it('③ 2.x serve（仅行中提及、无定义行）：不注入——朴素包含匹配的陷阱', () => {
-    const dump = `${TMP}/d3`;
-    const r = runCpx(AGENT_V2, ['serve', '--port', '1234'], dump);
-    const out = `${r.stdout}\n${r.stderr}`;
-    expect(r.status, `cpx output:\n${out}`).toBe(0);
+  it('③ 2.x serve（仅行中提及、无定义行）：不注入——朴素包含匹配的陷阱', async () => {
+    const dump = `${sandbox.root}/d3`;
+    const r = await run(AGENT_V2, ['serve', '--port', '1234'], dump);
+    expect(r.code, `cpx output:\n${r.output}`).toBe(0);
     expect(readArgv(dump)).toEqual(['serve', '--port', '1234']);
     assertInjectionIntact(dump);
-    expect(out).toContain('未注入');
+    expect(r.output).toContain('未注入');
   }, 120_000);
 
-  it('④ 2.x 根 flag（-s continue）：前置', () => {
-    const dump = `${TMP}/d4`;
-    const r = runCpx(AGENT_V2, ['-s', 'ses_abc123'], dump);
-    const out = `${r.stdout}\n${r.stderr}`;
-    expect(r.status, `cpx output:\n${out}`).toBe(0);
+  it('④ 2.x 根 flag（-s continue）：前置', async () => {
+    const dump = `${sandbox.root}/d4`;
+    const r = await run(AGENT_V2, ['-s', 'ses_abc123'], dump);
+    expect(r.code, `cpx output:\n${r.output}`).toBe(0);
     expect(readArgv(dump)).toEqual(['--standalone', '-s', 'ses_abc123']);
     assertInjectionIntact(dump);
   }, 120_000);
 
-  it('⑤ 2.x 目录位置参数（非子命令）：前置', () => {
-    const dump = `${TMP}/d5`;
-    const r = runCpx(AGENT_V2, ['/tmp/some-project'], dump);
-    const out = `${r.stdout}\n${r.stderr}`;
-    expect(r.status, `cpx output:\n${out}`).toBe(0);
+  it('⑤ 2.x 目录位置参数（非子命令）：前置', async () => {
+    const dump = `${sandbox.root}/d5`;
+    const r = await run(AGENT_V2, ['/tmp/some-project'], dump);
+    expect(r.code, `cpx output:\n${r.output}`).toBe(0);
     expect(readArgv(dump)).toEqual(['--standalone', '/tmp/some-project']);
     assertInjectionIntact(dump);
   }, 120_000);
 
-  it('⑥ 1.x 形态（无该 flag）：不注入（TUI 与子命令两形态）', () => {
-    const dumpA = `${TMP}/d6a`;
-    const ra = runCpx(AGENT_V1, [], dumpA);
-    const outA = `${ra.stdout}\n${ra.stderr}`;
-    expect(ra.status, `cpx output:\n${outA}`).toBe(0);
+  it('⑥ 1.x 形态（无该 flag）：不注入（TUI 与子命令两形态）', async () => {
+    const dumpA = `${sandbox.root}/d6a`;
+    const ra = await run(AGENT_V1, [], dumpA);
+    expect(ra.code, `cpx output:\n${ra.output}`).toBe(0);
     expect(readArgv(dumpA)).toEqual([]);
     assertInjectionIntact(dumpA);
-    expect(outA).toContain('未注入');
+    expect(ra.output).toContain('未注入');
 
-    const dumpB = `${TMP}/d6b`;
-    const rb = runCpx(AGENT_V1, ['run', 'hello'], dumpB);
-    const outB = `${rb.stdout}\n${rb.stderr}`;
-    expect(rb.status, `cpx output:\n${outB}`).toBe(0);
+    const dumpB = `${sandbox.root}/d6b`;
+    const rb = await run(AGENT_V1, ['run', 'hello'], dumpB);
+    expect(rb.code, `cpx output:\n${rb.output}`).toBe(0);
     expect(readArgv(dumpB)).toEqual(['run', 'hello']);
     assertInjectionIntact(dumpB);
   }, 120_000);
 
-  it('⑦ 用户已显式传入 --standalone：原样返回不重复注入', () => {
-    const dumpA = `${TMP}/d7a`;
-    const ra = runCpx(AGENT_V2, ['--standalone'], dumpA);
-    const outA = `${ra.stdout}\n${ra.stderr}`;
-    expect(ra.status, `cpx output:\n${outA}`).toBe(0);
+  it('⑦ 用户已显式传入 --standalone：原样返回不重复注入', async () => {
+    const dumpA = `${sandbox.root}/d7a`;
+    const ra = await run(AGENT_V2, ['--standalone'], dumpA);
+    expect(ra.code, `cpx output:\n${ra.output}`).toBe(0);
     expect(readArgv(dumpA)).toEqual(['--standalone']);
     assertInjectionIntact(dumpA);
 
-    const dumpB = `${TMP}/d7b`;
-    const rb = runCpx(AGENT_V2, ['run', '--standalone', 'hello'], dumpB);
-    const outB = `${rb.stdout}\n${rb.stderr}`;
-    expect(rb.status, `cpx output:\n${outB}`).toBe(0);
+    const dumpB = `${sandbox.root}/d7b`;
+    const rb = await run(AGENT_V2, ['run', '--standalone', 'hello'], dumpB);
+    expect(rb.code, `cpx output:\n${rb.output}`).toBe(0);
     expect(readArgv(dumpB)).toEqual(['run', '--standalone', 'hello']);
     assertInjectionIntact(dumpB);
   }, 120_000);
