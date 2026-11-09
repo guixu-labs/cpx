@@ -51,7 +51,7 @@ harness/
    零命中。必须与「上游台账收到了认证头」成对出现——只证其一不是完整证明
    （只证上游收到 = 没测 redactor；只证捕获没有 = 没测透传）。
 
-## spec 清单（12 文件 / 37 用例，两代同架构）
+## spec 清单（20 文件 / 59 用例，两代同架构）
 
 **协议全链路旅程**（三协议各一条完整链路：注入面 → 路由面 → 转换面 → 消费面）
 - `cpx-wire-anthropic.e2e.test.ts` — Anthropic Messages（流式 + 非流；sid 头路由）
@@ -63,11 +63,44 @@ harness/
 - `cpx-session-lifecycle.e2e.test.ts` — 退出收尾整链（manifest → 7z at-rest →
   governed 标记 → mock insight 导入契约）
 
+**对话连续性与多会话**
+- `cpx-multi-round.e2e.test.ts` — 多轮增量（回显不重落 / roundIndex 递增）、
+  /resume 侧滚动（双 sid 双文件）、注入去重（[已压缩] 占位 + fingerprint）、
+  title-gen 跳过（零捕获零残留）
+
+**子代理旅程（三框架 + dsh，全部落到 <父sid>/subagents/ 同布局）**
+- `cpx-subagent-claude.e2e.test.ts` — Agent 工具派发 → meta 回链；**异步回填序**
+  （子代理 emit 先于父派发收集 → pendingSubMeta 挂起后补写——真实竞态的锁）
+- `cpx-subagent-opencode.e2e.test.ts` — x-parent-session-id 声明式路由 +
+  task 工具族派发回链
+- `cpx-subagent-codex.e2e.test.ts` — spawn_agent 派发（message 直传形态）→
+  function_call_output 富化（agentId/nickname 重写）→ 父守卫；**压缩 resync**
+  （append-only 锚失配 → multiset 差分，摘要有/历史无/零重复）
+- `cpx-dsh-journey.e2e.test.ts` — wire 自描述框架标签（body.dsh_session_log，
+  与注入契约无关的识别机制）+ body 血缘路由 + descriptor 事件 → meta
+
+**provider 隧道**
+- `cpx-opencode-wire.e2e.test.ts` — opencode 全链路（注入反解 → /<pid>/ 前缀
+  隧道 → 剥前缀直达上游 → 捕获）；cannbot UA 分流（协议≠框架）
+
+**韧性与边界**
+- `cpx-resilience.e2e.test.ts` — 上游 5xx 透传零吞、SIGINT 收尾（130 +
+  dropSessionScratch + `cpx status` 活/死观测）、1MB 大体量双向保真、gzip
+  请求体（转发字节不动 + 捕获透明解压，两半各证一半）、并发到达序
+  （落盘序=到达序≠完成序——ordered-dispatch 核心承诺）、陈旧占位启动清扫
+  （0 字节 + 无伴生 meta 才算占位；带 meta 的是真实会话产物，绝不误删）
+
 **注入与解析契约**
 - `cpx-upstream-resolution.e2e.test.ts` — 全框架上游解析镜像契约（13 用例）
 - `cpx-standalone.e2e.test.ts` — opencode 2.x --standalone 探测注入（7 形态）
 - `cpx-custom-provider.e2e.test.ts` — 自定义 provider 捕获
 - `cpx-project-provider.e2e.test.ts` — 项目级 provider 捕获
+
+**CLI 面**
+- `cpx-cli-surface.e2e.test.ts` — --version/--help（版本单源）、completion
+  （bash 词表 + __complete 候选）、list（framework/protocol 列 + at-rest）、
+  config dedup on 联动（热开关走文件——与 multi-round 的 env override 互为
+  另一半）
 
 **基础设施层**
 - `cpx-hoist-tsx.e2e.test.ts` — npm 安装 hoist 布局的 tsx 启动链
@@ -92,6 +125,17 @@ harness/
   沙箱剥除 `OPENAI_API_KEY` 保证确定性落在该分支。
 - **占位文件**：proxy 启动即预创建钉定 sid 的 0 字节占位；流量全走头路由
   时退出会清掉——断言「钉定文件不存在」是头路由的反向证明。
+- **provider 隧道路由键不带 `/v1`**：opencode/cannbot 隧道剥 `/<pid>/` 前缀后
+  转发 `PROVIDER_UPSTREAMS[pid] + path`——桩路由键取决于配置 baseURL 的
+  形态（`stub` 根 → `/chat/completions`；`stub + /v1` → `/v1/chat/...`）。
+  同理 agent 侧拼 URL 时注入的 baseURL **尾斜杠不可剥**（SDK 相对拼接语义）。
+- **probeHelp 探测噪声**：opencode/cannbot profile 启动时 cpx 会跑
+  `agentCmd --help` 探测子命令面——假 agent 在探测期（无注入 env）必须秒退
+  且**别把「注入缺席」标记写进响应落盘文件**（harness 走独立 `.noinject` 落盘），
+  否则会污染透传对账。睡眠型 agent 尤其要 `[ -z "$注入变量" ] && exit 0`。
+- **全量并行的 status 断言**：spec 文件并行时多会话代理共存是常态——
+  `cpx status` 的进程计数断言会漂移，只能做 **sid 定向断言**（本会话 sid
+  在场/退场）。泄漏判定只归套件收尾的 pgrep 不变量。
 - **泄漏进程不变量的边界**：e2e 收尾 pgrep 锚定本仓 `src/server.ts` 全路径。
   用同一 checkout 正在跑真实捕获会话时跑 e2e 会误报——先停会话再跑套件。
 - **排障现场**：`CPX_E2E_KEEP=1` 保留沙箱目录（临时路径打印在失败信息里）。

@@ -3,6 +3,13 @@
 ## [Unreleased]
 
 ### Added
+- 【E2E 全面覆盖（会话级深水区）】新增 8 spec / 22 用例，e2e 12 文件 37 用例 → 20 文件 59 用例：
+  - 对话连续性：多轮增量（回显不重落 / roundIndex）、/resume 侧滚动双文件、注入去重 [已压缩] 占位（env override）、title-gen 零捕获
+  - 子代理四形态（统一 <父sid>/subagents/ 布局）：claude（Agent 派发 + **异步回填竞态**——子代理 emit 先于父派发收集，meta 挂起后补写）、opencode（x-parent-session-id 声明式 + task 族派发）、codex（spawn_agent + function_call_output 富化 + **父守卫** + **压缩 resync** 锚失配 multiset 差分）、dsh（wire 自描述框架标签 + body 血缘）
+  - provider 隧道全链路：注入反解 → /<pid>/ 前缀剥净直达上游 → 捕获；cannbot UA 分流（协议≠框架）
+  - 韧性六件：上游 5xx 透传零吞、SIGINT 收尾（130 + 占位/清单清理 + `cpx status` 活会话观测）、1MB 大体量双向保真、gzip 请求体（转发字节不动 + 捕获透明解压）、并发到达序（落盘序=到达序≠完成序）、陈旧占位启动清扫
+  - CLI 面：--version/--help（版本单源）、completion 词表 + __complete、list（framework/protocol 列 + at-rest）、config dedup on 热开关文件联动
+  - harness 三扩展：protocolAgent（五模式 × 请求序列/并发/gzip/延时）、剧本队列（同路由差异化应答）+ 应答延时、startCpx（信号操控会话）
 - 【E2E 测试框架（insight 架构同款）】`tests/e2e/` 收编为 harness + spec 两层：`harness/` 六件套（constants 单一事实源 / sandbox 环境隔离五件套 / upstream-stub 三协议剧本桩+请求台账 / fake-agent 三标准件 / capture 断言+验收哨兵 / session 旅程驱动），spec 一律引用不自带。既有 8 个 ad-hoc e2e 中 7 个收编（cannbot-pack 为产物审计不涉进程，保持原样），环境纪律统一补齐（出口代理剥净、agent 端点发现变量默认剥除、XDG 配置面隔离）
 - 【协议旅程补全】新增三协议全链路 spec：anthropic（流式+非流，sid 头路由 vs 钉定占位清理的双向证明）、responses（codex 通道 thinking/text/tool_use 三态块）；透传保真 + 密钥零泄漏成对断言（上游台账逐字节对账 + 认证头到达 + 捕获全文零机密）；会话生命周期退出链（.sids manifest 消费 → 7z at-rest + governed 标记 → mock insight 导入契约）；e2e 覆盖 8 文件 32 用例 → 12 文件 37 用例
 - 【验收哨兵】claude-jsonl 消费契约哨兵（每行可解析 + 形状齐备 + x_lake 声明信封——insight 零改动消费的生产者侧锁）随所有旅程 spec 生效
