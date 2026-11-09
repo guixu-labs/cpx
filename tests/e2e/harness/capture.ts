@@ -23,9 +23,10 @@ import { readCaptureText } from '../../../src/writer.ts';
 import { CAPTURE_PREFIX } from './constants';
 import type { Sandbox } from './sandbox';
 
-/** 捕获文件路径（明文或压缩态先查存在者；不存在给明文路径让断言红得明白）。 */
-export function captureFile(sandbox: Sandbox, sid: string): string {
-  const stem = path.join(sandbox.captures, `${CAPTURE_PREFIX}${sid}`);
+/** 捕获文件路径（明文或压缩态先查存在者；不存在给明文路径让断言红得明白）。
+ *  `rel` 指向会话目录内的相对路径（子代理形态：`<sid>/subagents/<subId>`）。 */
+export function captureFile(sandbox: Sandbox, sid: string, rel?: string): string {
+  const stem = rel ? path.join(sandbox.captures, rel) : path.join(sandbox.captures, `${CAPTURE_PREFIX}${sid}`);
   for (const p of [`${stem}.jsonl`, `${stem}.jsonl.7z`, `${stem}.jsonl.gz`]) {
     if (fs.existsSync(p)) return p;
   }
@@ -33,8 +34,8 @@ export function captureFile(sandbox: Sandbox, sid: string): string {
 }
 
 /** 读取捕获全部行（JSON 解析后的对象数组；空/不存在断言红）。 */
-export function readCaptureLines(sandbox: Sandbox, sid: string): Record<string, unknown>[] {
-  const file = captureFile(sandbox, sid);
+export function readCaptureLines(sandbox: Sandbox, sid: string, rel?: string): Record<string, unknown>[] {
+  const file = captureFile(sandbox, sid, rel);
   const text = readCaptureText(file);
   const lines = text.split('\n').filter((l) => l.trim()).map((l) => JSON.parse(l));
   expect(lines.length, `capture ${file} is empty`).toBeGreaterThan(0);

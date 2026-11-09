@@ -89,7 +89,7 @@ describe('cpx 透传保真 + 密钥零泄漏（上游收到==agent 发出；捕�
 
     // ── 响应侧：agent 收到 == 桩发出（tee 零干预）──────────────
     const resp = readAgentResponse(sandbox, 'fake-claude');
-    expect(resp).toBe(`HTTP 200\n${SSE_TEXT}`);
+    expect(resp).toBe(`=== HTTP 200\n${SSE_TEXT}\n`);
 
     // ── 零泄漏：捕获全文（透明解压）+ meta 明文 ─────────────────
     assertNoSecrets(sandbox, SID, [SECRET_BEARER, SECRET_APIKEY]);

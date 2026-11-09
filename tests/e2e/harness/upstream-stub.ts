@@ -27,11 +27,11 @@ export interface RecordedRequest {
 
 export type UpstreamScript =
   /** SSE 流：text = 预序列化的事件流文本（sseBody 助手生成）。 */
-  | { kind: 'sse'; text: string }
+  | { kind: 'sse'; text: string; delayMs?: number }
   /** 一次性 JSON 应答（非流协议路径 / 错误形态）。 */
-  | { kind: 'json'; status?: number; body: unknown }
+  | { kind: 'json'; status?: number; body: unknown; delayMs?: number }
   /** 裸应答（全控制：状态行 + 头 + 原样体——无效 gzip 等畸形上游形态）。 */
-  | { kind: 'raw'; status: number; headers: Record<string, string>; body: string | Buffer }
+  | { kind: 'raw'; status: number; headers: Record<string, string>; body: string | Buffer; delayMs?: number }
   /** 拖延（nonstream-stall 类用例）：挂住连接不回。 */
   | { kind: 'stall'; ms?: number };
 
@@ -42,6 +42,9 @@ export interface UpstreamStub {
   requests: RecordedRequest[];
   /** 按 path 后缀配剧本（如 '/v1/messages'）；未配路由走 default 剧本。 */
   script(pathSuffix: string, script: UpstreamScript): void;
+  /** 按 path 后缀配剧本队列：每次命中消费一个（FIFO），队空回落 fallback——
+   *  同路由多请求差异化应答（到达序/并发用例）的事实源。 */
+  scriptQueue(pathSuffix: string, scripts: UpstreamScript[]): void;
   /** 兜底剧本（默认 404 台账——未期路由到上游也算请求，对账时可见）。 */
   fallback(script: UpstreamScript): void;
   close(): Promise<void>;
@@ -55,7 +58,7 @@ export function sseBody(events: unknown[], opts: { openAIDone?: boolean } = {}):
 
 export async function startUpstreamStub(): Promise<UpstreamStub> {
   const requests: RecordedRequest[] = [];
-  const scripts = new Map<string, UpstreamScript>();
+  const scripts = new Map<string, UpstreamScript[]>();
   let fallbackScript: UpstreamScript | null = null;
 
   const server = http.createServer((req, res) => {
@@ -71,29 +74,42 @@ export async function startUpstreamStub(): Promise<UpstreamStub> {
         body,
       });
       // 后缀匹配（带 query / provider 前缀的路由都能命中：/<pid>/chat/completions）
+      // 命中即消费队首（FIFO）；队空或未配走 fallback
       let script: UpstreamScript | null = null;
-      for (const [suffix, s] of scripts) {
-        if (url.includes(suffix)) { script = s; break; }
+      for (const [suffix, queue] of scripts) {
+        if (url.includes(suffix)) {
+          script = queue.length > 0 ? queue.shift()! : null;
+          break;
+        }
       }
       script ??= fallbackScript ?? { kind: 'json', status: 404, body: { error: 'unscripted route' } };
-      if (script.kind === 'stall') {
-        // 挂住不断（stall 用例的连接形态），到时销毁强制断开
-        const t = setTimeout(() => { res.destroy(); }, script.ms ?? 60_000);
-        res.on('close', () => clearTimeout(t));
+      const sc: UpstreamScript = script;
+      // 应答延时：编排「后到先答」的到达序（异步回填类用例的事实源）
+      const respond = () => {
+        if (sc.kind === 'stall') {
+          // 挂住不断（stall 用例的连接形态），到时销毁强制断开
+          const t = setTimeout(() => { res.destroy(); }, sc.ms ?? 60_000);
+          res.on('close', () => clearTimeout(t));
+          return;
+        }
+        if (sc.kind === 'sse') {
+          res.writeHead(200, { 'content-type': 'text/event-stream' });
+          res.end(sc.text);
+          return;
+        }
+        if (sc.kind === 'raw') {
+          res.writeHead(sc.status, sc.headers);
+          res.end(sc.body);
+          return;
+        }
+        res.writeHead(sc.status ?? 200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify(sc.body));
+      };
+      if ('delayMs' in sc && sc.delayMs) {
+        setTimeout(respond, sc.delayMs);
         return;
       }
-      if (script.kind === 'sse') {
-        res.writeHead(200, { 'content-type': 'text/event-stream' });
-        res.end(script.text);
-        return;
-      }
-      if (script.kind === 'raw') {
-        res.writeHead(script.status, script.headers);
-        res.end(script.body);
-        return;
-      }
-      res.writeHead(script.status ?? 200, { 'content-type': 'application/json' });
-      res.end(JSON.stringify(script.body));
+      respond();
     });
   });
   await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
@@ -102,7 +118,8 @@ export async function startUpstreamStub(): Promise<UpstreamStub> {
   return {
     url: `http://127.0.0.1:${port}`,
     requests,
-    script: (suffix, s) => { scripts.set(suffix, s); },
+    script: (suffix, s) => { scripts.set(suffix, [s]); },
+    scriptQueue: (suffix, list) => { scripts.set(suffix, [...list]); },
     fallback: (s) => { fallbackScript = s; },
     close: () => new Promise<void>((r) => server.close(() => r())),
   };

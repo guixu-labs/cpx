@@ -67,6 +67,45 @@ export function runCpx(
   return runCommand(sandbox, 'bash', [WRAPPER, ...argv], opts);
 }
 
+export interface CpxSession {
+  /** cpx 进程句柄（SIGINT/SIGTERM 注入面——wrapper 是 exec 单进程，信号直达）。 */
+  child: import('node:child_process').ChildProcess;
+  /** 进程退出 resolve（与 runCpx 同结果形态）。 */
+  done: Promise<CpxRunResult>;
+}
+
+/** 启动一个不自动等待的 cpx 会话（信号收尾 / status 观测类用例）：
+ *  返回进程句柄 + done promise；调用方自行 kill 或等自然退出。 */
+export function startCpx(
+  sandbox: Sandbox,
+  argv: string[],
+  opts: { env?: Record<string, string | undefined>; cwd?: string; timeoutMs?: number } = {},
+): CpxSession {
+  const child = spawn('bash', [WRAPPER, ...argv], {
+    env: sandbox.env(opts.env),
+    cwd: opts.cwd,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  let output = '';
+  child.stdout!.on('data', (d) => { output += d; });
+  child.stderr!.on('data', (d) => { output += d; });
+  const timer = setTimeout(() => {
+    output += '\n[E2E] cpx session timeout — killing';
+    try { child.kill('SIGKILL'); } catch { /* already gone */ }
+  }, opts.timeoutMs ?? 120_000);
+  const done = new Promise<CpxRunResult>((resolve) => {
+    child.on('close', (code) => {
+      clearTimeout(timer);
+      resolve({ code: code ?? -1, output });
+    });
+    child.on('error', (e) => {
+      clearTimeout(timer);
+      resolve({ code: -1, output: `${output}\n[E2E] spawn error: ${e.message}` });
+    });
+  });
+  return { child, done };
+}
+
 /** 读取假 agent 落盘的 CPX_SESSION_ID（cpx 钉定 sid——工牌对账用）。 */
 export function readSidDump(sandbox: Sandbox, agentName: string): string {
   return fs.readFileSync(path.join(sandbox.root, `${agentName}.sid`), 'utf8').trim();
