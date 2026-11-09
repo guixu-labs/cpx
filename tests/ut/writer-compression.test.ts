@@ -24,6 +24,17 @@ import {
 import { ensure7z, decompressToPlain } from '../../src/compression.ts';
 
 const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'cpx-7z-'));
+
+// 兄弟 insight 仓源级锁的定位：monorepo 布局名 insight / 独立 checkout 名
+// context-insight 依次探测；两者皆缺返回 null（skipIf 门控见用例处）
+const INSIGHT_COMPRESSION_SRC = (() => {
+  const siblingRoot = path.resolve(__dirname, '../../..');
+  for (const name of ['insight', 'context-insight']) {
+    const p = path.join(siblingRoot, name, 'src', 'lib', 'compression.ts');
+    if (fs.existsSync(p)) return p;
+  }
+  return null;
+})();
 process.env.CONTEXT_PROXY_DIR = tmpRoot;
 
 beforeEach(() => {
@@ -169,10 +180,12 @@ describe('writer 7z at rest', () => {
     expect(fs.statSync(f).size).toBe(270 * 1024 * 1024);
   });
 
-  it('compression parity：双端 .7z 解压点 maxBuffer 对齐 1GiB（源级锁）', () => {
+  it.skipIf(INSIGHT_COMPRESSION_SRC == null)('compression parity：双端 .7z 解压点 maxBuffer 对齐 1GiB（源级锁）', () => {
     // 本轮审查抓的正是「readCaptureBuffer 修了 1GiB、同文件 decompressToPlain
-    // 漏改」——源级锁双端两个解压点的 maxBuffer 形态（读源码正则抽取），漂移/复发即红
-    const insightSrc = fs.readFileSync(path.resolve(__dirname, '../../../insight/src/lib/compression.ts'), 'utf8');
+    // 漏改」——源级锁双端两个解压点的 maxBuffer 形态（读源码正则抽取），漂移/复发即红。
+    // 兄弟 insight 仓两种 checkout 名都探测（monorepo 布局 insight / 独立 clone
+    // 名 context-insight）；缺席（单独跑 cpx 的环境）skip 不红流水线。
+    const insightSrc = fs.readFileSync(INSIGHT_COMPRESSION_SRC!, 'utf8');
     const dtStart = insightSrc.indexOf('export function decompressToPlain');
     const dtEnd = insightSrc.indexOf('export function readCaptureBuffer');
     expect(insightSrc.slice(dtStart, dtEnd)).toContain("run7za(['e', '-so', archivePath], 1 << 30)");

@@ -61,6 +61,8 @@ resolve_vitest() {
     VITEST="node_modules/.bin/vitest"
   elif [ -x ../insight/node_modules/.bin/vitest ]; then
     VITEST="../insight/node_modules/.bin/vitest"
+  elif [ -x ../context-insight/node_modules/.bin/vitest ]; then
+    VITEST="../context-insight/node_modules/.bin/vitest"
   else
     return 1
   fi

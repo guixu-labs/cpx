@@ -1,5 +1,10 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+- 【兄弟仓路径可移植性】`writer-compression` 源级锁硬编码 `../insight`，独立 checkout 名 `context-insight` 下必红——双名探测 + 缺席 skipIf（run-tests.sh 的 vitest 借用同步补第二候选）
+
 ## [v0.1.12] - 2026-10-27
 
 > 更名说明：npm 包主体自本版起为 `context-cpx`（命令仍为 `cpx`，捕获目录 `~/.context-insight/proxy/`）；`cannbot-proxy` 转为同内容变体包。捕获格式契约与 insight ≥ v0.2.41 配套。
