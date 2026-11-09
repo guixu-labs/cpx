@@ -13,6 +13,29 @@ function sse(events: object[]): string {
   return events.map(e => `data: ${JSON.stringify(e)}\n\n`).join('') + 'data: [DONE]\n\n';
 }
 
+describe('stream-reassembler: malformed event recovery', () => {
+  const cases = [
+    { protocol: 'openai' as const, events: [{ choices: [{ delta: { content: 'later' } }] }] },
+    { protocol: 'anthropic' as const, events: [
+      { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } },
+      { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'later' } },
+    ] },
+    { protocol: 'responses' as const, events: [
+      { type: 'response.output_item.added', output_index: 0, item: { type: 'message', role: 'assistant' } },
+      { type: 'response.output_text.delta', output_index: 0, delta: 'later' },
+    ] },
+  ];
+  for (const { protocol, events } of cases) {
+    for (const bad of ['null', 'true', '42', '"bad"', '[]', '{']) {
+      it(`${protocol} skips ${bad} and captures the next event in the same chunk`, () => {
+        const r = createReassembler(protocol);
+        expect(() => r.feed(`data: ${bad}\n\n` + sse(events))).not.toThrow();
+        expect(r.result().content.map(c => c.text ?? '').join('')).toBe('later');
+      });
+    }
+  }
+});
+
 describe('stream-reassembler: Anthropic', () => {
   it('accumulates text deltas into a text block', () => {
     const r = createReassembler('anthropic');
