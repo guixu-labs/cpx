@@ -61,6 +61,21 @@ resolve_vitest() {
     VITEST="node_modules/.bin/vitest"
   elif [ -x ../insight/node_modules/.bin/vitest ]; then
     VITEST="../insight/node_modules/.bin/vitest"
+  elif [ -x ../context-insight/node_modules/.bin/vitest ]; then
+    VITEST="../context-insight/node_modules/.bin/vitest"
+  else
+    return 1
+  fi
+}
+
+# 自愈安装目标：与 resolve_vitest 的兄弟名探测保持一致（monorepo 布局 insight /
+# 独立 checkout 名 context-insight），命中哪个兄弟仓就替哪个装——杜绝「探测
+# 认双名、安装只认 insight」的硬编码漂移。
+resolve_insight_dir() {
+  if [ -f ../insight/package.json ]; then
+    printf '%s\n' '../insight'
+  elif [ -f ../context-insight/package.json ]; then
+    printf '%s\n' '../context-insight'
   else
     return 1
   fi
@@ -68,7 +83,9 @@ resolve_vitest() {
 
 if ! resolve_vitest; then
   echo "==> [cpx] insight deps missing (cpx borrows its vitest), installing..."
-  (cd ../insight && npm install --no-audit --no-fund) || exit 1
+  INSIGHT_DIR="$(resolve_insight_dir)" \
+    || { echo "no sibling repo found (need insight/ or context-insight/ next to cpx) to borrow vitest from" >&2; exit 1; }
+  (cd "$INSIGHT_DIR" && npm install --no-audit --no-fund) || exit 1
   resolve_vitest || { echo "vitest still missing after npm install" >&2; exit 1; }
 fi
 
@@ -91,7 +108,21 @@ case "$MODE" in
     [ "${COVERAGE:-0}" = "1" ] && [ -f coverage/lcov.info ] \
       && echo "==> [cpx] 覆盖率明细: packages/cpx/coverage/index.html（浏览器）/ lcov.info"
     exit "$rc" ;;
-  e2e) "$VITEST" run tests/e2e ;;
+  e2e)
+    "$VITEST" run tests/e2e
+    rc=$?
+    # 泄漏进程不变量（insight e2e teardown「端口回收 fail-fast」的同位物）：
+    # 会话代理是 cpx-cli 的子进程——cpx-cli 被超时击杀时代理可能残留。套件
+    # 跑完必须零存活（锚定本仓 server.ts 全路径，绝不误伤他人）；有残留即
+    # 整层判负，防「用例全绿但机器上漏了一排僵尸代理」的静默劣化。
+    if [ "$rc" -eq 0 ]; then
+      leaked="$(pgrep -f "$PWD/src/server\.ts" || true)"
+      if [ -n "$leaked" ]; then
+        echo "==> [cpx] LEAK: session proxy survived the e2e suite (pids: $leaked) — failing" >&2
+        rc=1
+      fi
+    fi
+    exit "$rc" ;;
   *)
     echo "Usage: $0 [ut|e2e]" >&2
     exit 2

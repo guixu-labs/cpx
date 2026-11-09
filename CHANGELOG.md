@@ -1,5 +1,25 @@
 # Changelog
 
+## [v0.1.14] - 2026-11-09
+
+### Added
+- 【E2E 全面覆盖（会话级深水区）】新增 8 spec / 22 用例，e2e 12 文件 37 用例 → 20 文件 59 用例：
+  - 对话连续性：多轮增量（回显不重落 / roundIndex）、/resume 侧滚动双文件、注入去重 [已压缩] 占位（env override）、title-gen 零捕获
+  - 子代理四形态（统一 <父sid>/subagents/ 布局）：claude（Agent 派发 + **异步回填竞态**——子代理 emit 先于父派发收集，meta 挂起后补写）、opencode（x-parent-session-id 声明式 + task 族派发）、codex（spawn_agent + function_call_output 富化 + **父守卫** + **压缩 resync** 锚失配 multiset 差分）、dsh（wire 自描述框架标签 + body 血缘）
+  - provider 隧道全链路：注入反解 → /<pid>/ 前缀剥净直达上游 → 捕获；cannbot UA 分流（协议≠框架）
+  - 韧性六件：上游 5xx 透传零吞、SIGINT 收尾（130 + 占位/清单清理 + `cpx status` 活会话观测）、1MB 大体量双向保真、gzip 请求体（转发字节不动 + 捕获透明解压）、并发到达序（落盘序=到达序≠完成序）、陈旧占位启动清扫
+  - CLI 面：--version/--help（版本单源）、completion 词表 + __complete、list（framework/protocol 列 + at-rest）、config dedup on 热开关文件联动
+  - harness 三扩展：protocolAgent（五模式 × 请求序列/并发/gzip/延时）、剧本队列（同路由差异化应答）+ 应答延时、startCpx（信号操控会话）
+- 【E2E 测试框架（insight 架构同款）】`tests/e2e/` 收编为 harness + spec 两层：`harness/` 六件套（constants 单一事实源 / sandbox 环境隔离五件套 / upstream-stub 三协议剧本桩+请求台账 / fake-agent 三标准件 / capture 断言+验收哨兵 / session 旅程驱动），spec 一律引用不自带。既有 8 个 ad-hoc e2e 中 7 个收编（cannbot-pack 为产物审计不涉进程，保持原样），环境纪律统一补齐（出口代理剥净、agent 端点发现变量默认剥除、XDG 配置面隔离）
+- 【协议旅程补全】新增三协议全链路 spec：anthropic（流式+非流，sid 头路由 vs 钉定占位清理的双向证明）、responses（codex 通道 thinking/text/tool_use 三态块）；透传保真 + 密钥零泄漏成对断言（上游台账逐字节对账 + 认证头到达 + 捕获全文零机密）；会话生命周期退出链（.sids manifest 消费 → 7z at-rest + governed 标记 → mock insight 导入契约）；e2e 覆盖 8 文件 32 用例 → 12 文件 37 用例
+- 【验收哨兵】claude-jsonl 消费契约哨兵（每行可解析 + 形状齐备 + x_lake 声明信封——insight 零改动消费的生产者侧锁）随所有旅程 spec 生效
+- 【泄漏进程不变量】`run-tests.sh e2e` 收尾 pgrep 自查本仓 `src/server.ts` 零存活（fail-fast，防「用例全绿但机器漏僵尸代理」的静默劣化）
+- 【一条命令门禁】`npm test` = ut + e2e 全覆盖（原 `test:all` 退役，新增 `test:ut` 快速回路）
+- 【套件架构文档】`tests/e2e/README.md`：真栈映射表、harness 清单、哨兵语义、spec 矩阵、已知陷阱（responses 转发剥 /v1、vitest worker 死锁、at-rest .7z 等）
+
+### Fixed
+- 【兄弟仓路径可移植性】`writer-compression` 源级锁硬编码 `../insight`，独立 checkout 名 `context-insight` 下必红——双名探测 + 缺席 skipIf（run-tests.sh 的 vitest 借用同步补第二候选）
+
 ## [v0.1.12] - 2026-10-27
 
 > 更名说明：npm 包主体自本版起为 `context-cpx`（命令仍为 `cpx`，捕获目录 `~/.context-insight/proxy/`）；`cannbot-proxy` 转为同内容变体包。捕获格式契约与 insight ≥ v0.2.41 配套。

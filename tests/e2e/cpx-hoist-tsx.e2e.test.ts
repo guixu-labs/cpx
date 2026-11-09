@@ -1,16 +1,14 @@
 // Copyright (c) 2025-2026 Huawei Technologies Co., Ltd.
-// This program is free software, you can redistribute it and/or modify it under the terms of
+// This program is free software; you can redistribute it and/or modify it under the terms and conditions of
 // CANN Open Software License Agreement Version 2.0 (the "License").
-// Please refer to the License for details. You may not use this file except in compliance with the License.
+// You may refer to the License for details. Please do not use this file except in compliance with the License.
 // THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
-// INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY OR FITNESS FOR A PARTICULAR PURPOSE.
+// INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT OF MERCHANTABILITY OR FITNESS FOR A PARTICULAR PURPOSE.
 // See LICENSE in the root of the software repository for the full text of the License.
 
-// 会话代理 tsx 启动 hoist 布局 IT（npm i context-cpx 进用户项目 / npx
-// context-cpx 的安装形态回归）：
-//   fixture = 用户项目布局——node_modules/context-cpx（包体拷贝，**无**内嵌
-//   node_modules）+ tsx/esbuild/@esbuild 提升到顶层 node_modules（npm hoist）。
-//   断言四件事：
+// cpx 会话代理 tsx 启动 IT（npm 安装布局回归）：用户项目 npm 装包
+// （node_modules/context-cpx）+ tsx/esbuild/@esbuild 提升到顶层 node_modules（npm hoist）。
+// 断言四件事：
 //   ① bin 启动器起 cpx-cli 成功（createRequire 解析提升的 tsx loader）
 //   ② 会话代理（src/server.ts）经 node --import <loader> 真启动——假 agent 收到
 //      OPENAI_BASE_URL=http://127.0.0.1:<port>
@@ -18,30 +16,29 @@
 //      必须不存在——修复前 <pkg>/node_modules/.bin/tsx 硬编码在 hoist 布局下
 //      miss，回落 npx 从 registry 现场下载 tsx（网络依赖、慢、离线即挂）
 //   ④ 无流量 → 占位捕获清理，退出码 0
+// harness 侧：沙箱（HOME 隔离 + bin/ 前置 PATH——假 npx 与 open 桩落
+// sandbox.bin）+ runCommand（被测入口是安装态 bin 而非仓内 wrapper，故不走
+// runCpx）；hoist 布局本身是测试素材，本地搭建。
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
+import { createSandbox, type Sandbox } from './harness/sandbox';
+import { runCommand } from './harness/session';
 
 const PROXY_ROOT = path.resolve(__dirname, '../../');
 const REPO_NM = path.join(PROXY_ROOT, 'node_modules');
 
-let TMP: string;
+let sandbox: Sandbox;
 let PROJECT: string;
 let PKG: string;
-let HOME: string;
-let CAPTURES: string;
 let AGENT: string;
 let AGENT_ENV: string;
 let NPX_MARKER: string;
 
 beforeAll(() => {
-  TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'cpx-hoist-tsx-it-'));
-  PROJECT = path.join(TMP, 'project');
+  sandbox = createSandbox('cpx-hoist-tsx-it-');
+  PROJECT = path.join(sandbox.root, 'project');
   PKG = path.join(PROJECT, 'node_modules', 'context-cpx');
-  HOME = path.join(TMP, 'home');
-  CAPTURES = path.join(TMP, 'captures');
 
   // 包体拷贝（src/package.json/bin——不含 node_modules）：模拟 npm 装进用户项目
   fs.mkdirSync(PKG, { recursive: true });
@@ -55,25 +52,26 @@ beforeAll(() => {
     fs.cpSync(path.join(REPO_NM, dep), path.join(PROJECT, 'node_modules', dep), { recursive: true });
   }
 
-  // 假 npx：落盘标记后失败——证明会话代理从未走 npx 回退
-  NPX_MARKER = path.join(TMP, 'npx-marker');
-  fs.mkdirSync(path.join(TMP, 'bin'), { recursive: true });
-  fs.writeFileSync(path.join(TMP, 'bin', 'npx'), [
+  // 假 npx：落盘标记后失败——证明会话代理从未走 npx 回退（sandbox.bin 由
+  // 沙箱 PATH 前置，天然遮蔽真 npx）
+  NPX_MARKER = path.join(sandbox.root, 'npx-marker');
+  fs.writeFileSync(path.join(sandbox.bin, 'npx'), [
     '#!/bin/sh',
     `echo "npx fallback hit: $*" >> '${NPX_MARKER}'`,
     'exit 1',
     '',
   ].join('\n'));
-  fs.chmodSync(path.join(TMP, 'bin', 'npx'), 0o755);
+  fs.chmodSync(path.join(sandbox.bin, 'npx'), 0o755);
   // xdg-open/open 桩：退出路径 import 成功会 openBrowser——防真弹浏览器标签
+  // （沙箱 CONTEXT_NO_BROWSER=1 之外的 belt+braces）
   for (const name of ['xdg-open', 'open']) {
-    fs.writeFileSync(path.join(TMP, 'bin', name), '#!/bin/sh\nexit 0\n');
-    fs.chmodSync(path.join(TMP, 'bin', name), 0o755);
+    fs.writeFileSync(path.join(sandbox.bin, name), '#!/bin/sh\nexit 0\n');
+    fs.chmodSync(path.join(sandbox.bin, name), 0o755);
   }
 
   // 假 agent：记录注入的 OPENAI_BASE_URL（generic profile 直注入 env）
-  AGENT_ENV = path.join(TMP, 'agent-env');
-  AGENT = path.join(TMP, 'fake-agent');
+  AGENT_ENV = path.join(sandbox.root, 'agent-env');
+  AGENT = path.join(sandbox.bin, 'fake-agent');
   fs.writeFileSync(AGENT, [
     '#!/bin/sh',
     `printenv OPENAI_BASE_URL > '${AGENT_ENV}'`,
@@ -81,35 +79,23 @@ beforeAll(() => {
     '',
   ].join('\n'));
   fs.chmodSync(AGENT, 0o755);
-
-  fs.mkdirSync(HOME, { recursive: true });
 });
 
 afterAll(() => {
-  try { fs.rmSync(TMP, { recursive: true, force: true }); } catch { /* best-effort */ }
+  sandbox.cleanup();
 });
 
 describe('cpx 会话代理 tsx 启动（用户项目 hoist 布局）', () => {
-  it('bin 起 cpx-cli + 会话代理经标准解析的 tsx loader 启动；npx 回退不触发；干净退出', () => {
+  it('bin 起 cpx-cli + 会话代理经标准解析的 tsx loader 启动；npx 回退不触发；干净退出', async () => {
     // hoist 布局前提自检：包内无嵌套 tsx（旧硬编码路径必然 miss）
     expect(fs.existsSync(path.join(PKG, 'node_modules'))).toBe(false);
     expect(fs.existsSync(path.join(PROJECT, 'node_modules', 'tsx'))).toBe(true);
 
-    const r = spawnSync(process.execPath, [path.join(PKG, 'bin', 'cpx.mjs'), '--agent', 'generic', '--', AGENT], {
-      encoding: 'utf-8',
+    const r = await runCommand(sandbox, process.execPath, [path.join(PKG, 'bin', 'cpx.mjs'), '--agent', 'generic', '--', AGENT], {
       cwd: PROJECT,
-      timeout: 120_000,
-      env: {
-        ...process.env,
-        HOME,
-        CONTEXT_PROXY_DIR: CAPTURES,
-        // 钉死不可达：探测必败 → 不机会主义导入开发机在跑的真 insight、不开浏览器
-        CONTEXT_CPX_INSIGHT_BASE: 'http://127.0.0.1:1',
-        PATH: [path.join(TMP, 'bin'), process.env.PATH ?? ''].join(path.delimiter),
-      },
     });
-    const out = `${r.stdout}\n${r.stderr}`;
-    expect(r.status, `cpx output:\n${out}`).toBe(0);
+    const out = r.output;
+    expect(r.code, `cpx output:\n${out}`).toBe(0);
 
     // ① bin 启动器 + 会话代理都起来了：假 agent 收到本机 proxy 地址
     expect(fs.existsSync(AGENT_ENV), `agent env file missing; cpx output:\n${out}`).toBe(true);
@@ -120,8 +106,8 @@ describe('cpx 会话代理 tsx 启动（用户项目 hoist 布局）', () => {
     expect(fs.existsSync(NPX_MARKER), `npx fallback was hit:\n${fs.existsSync(NPX_MARKER) ? fs.readFileSync(NPX_MARKER, 'utf-8') : ''}`).toBe(false);
 
     // ③ 无流量 → 占位捕获清理，不留残骸
-    const leftovers = fs.existsSync(CAPTURES)
-      ? fs.readdirSync(CAPTURES).filter(f => f.endsWith('.jsonl') || f.endsWith('.sids'))
+    const leftovers = fs.existsSync(sandbox.captures)
+      ? fs.readdirSync(sandbox.captures).filter(f => f.endsWith('.jsonl') || f.endsWith('.sids'))
       : [];
     expect(leftovers).toEqual([]);
   }, 120_000);

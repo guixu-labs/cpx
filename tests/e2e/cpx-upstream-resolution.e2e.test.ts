@@ -1,9 +1,9 @@
 // Copyright (c) 2025-2026 Huawei Technologies Co., Ltd.
 // This program is free software; you can redistribute it and/or modify it under the terms and conditions of
 // CANN Open Software License Agreement Version 2.0 (the "License").
-// Please refer to the License for details. Do not use this file except in compliance with the License.
+// You may refer to the License for details. Please do not use this file except in compliance with the License.
 // THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
-// INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY OR FITNESS FOR A PARTICULAR PURPOSE.
+// INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT OF MERCHANTABILITY OR FITNESS FOR A PARTICULAR PURPOSE.
 // See LICENSE in the root of the software repository for the full text of the License.
 
 // 全框架上游解析 IT：镜像契约回归锁——cpx 代理必须把流量转发到「子进程
@@ -21,20 +21,21 @@
 //
 // 客户反馈根因（本组用例①）：claude 族此前只读 user settings，进程 env 的
 // ANTHROPIC_BASE_URL 被无视 → 硬编码回退官方地址，代理转发到错误上游。
+//
+// harness 侧：沙箱（HOME 隔离 + agent 端点发现变量默认剥除——本组用例
+// 要什么经 env 显式给）+ runCpx；11 个命名假上游与 mode-agent 是本组
+// 用例的测试素材，保留本地（一个进程多个 server，命中按 name 记录断言）。
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { spawn } from 'node:child_process';
 import http from 'node:http';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import type { AddressInfo } from 'node:net';
+import { createSandbox, type Sandbox } from './harness/sandbox';
+import { runCpx as harnessRunCpx } from './harness/session';
 
-const WRAPPER = path.join(path.resolve(__dirname, '../../'), 'cpx-cli');
-
-let TMP: string;
+let sandbox: Sandbox;
 let HOME: string;
 let PROJ: string;
-let CAPTURES: string;
 let AGENT: string;
 
 /** 命名假上游端口（一个进程多个 server；命中按 name 记录断言） */
@@ -51,12 +52,10 @@ const hits: UpstreamHit[] = [];
 const url = (name: UpstreamName): string => `http://127.0.0.1:${ports[name]}`;
 
 beforeAll(async () => {
-  TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'cpx-upstream-it-'));
-  HOME = path.join(TMP, 'home');
-  PROJ = path.join(TMP, 'proj');
-  CAPTURES = path.join(TMP, 'captures');
-  fs.mkdirSync(HOME, { recursive: true });
-  fs.mkdirSync(CAPTURES, { recursive: true });
+  sandbox = createSandbox('cpx-upstream-it-');
+  HOME = sandbox.home;
+  PROJ = path.join(sandbox.root, 'proj');
+  fs.mkdirSync(PROJ, { recursive: true });
 
   for (const name of UPSTREAM_NAMES) {
     await new Promise<void>(resolve => {
@@ -79,7 +78,7 @@ beforeAll(async () => {
   // 假 agent：按 CPX_TEST_AGENT_MODE 复刻各族的端点发现机制（与真实 agent
   // 同源），CPX_TEST_AGENT_CALL=1 时向注入的 proxy 地址真实 POST 一条请求。
   // fetch 带 8s 超时：上游 400/网络不可达（离线 CI）不影响 agent 退出码。
-  AGENT = path.join(TMP, 'fake-agent');
+  AGENT = path.join(sandbox.bin, 'fake-agent');
   fs.writeFileSync(AGENT, [
     '#!/usr/bin/env node',
     `const fs = require('fs');`,
@@ -125,17 +124,10 @@ beforeAll(async () => {
 });
 
 afterAll(() => {
-  try { fs.rmSync(TMP, { recursive: true, force: true }); } catch { /* best-effort */ }
+  sandbox.cleanup();
 });
 
 // —— 环境与配置文件操纵 ——————————————————————————————————————————
-
-/** 开发机 shell 可能残留这些变量（含 cpx 旋钮），全部清零保证确定性 */
-const SCRUB_KEYS = [
-  'ANTHROPIC_BASE_URL', 'ANTHROPIC_API_KEY', 'ANTHROPIC_MODEL',
-  'OPENAI_BASE_URL', 'OPENAI_API_KEY', 'DEEPSEEK_BASE_URL',
-  'CONTEXT_PROXY_ANTHROPIC_UPSTREAM', 'CONTEXT_PROXY_OPENAI_UPSTREAM', 'CONTEXT_PROXY_RESPONSES_UPSTREAM',
-];
 
 function writeClaudeSettings(dir: string, env?: Record<string, string>): void {
   const claudeDir = path.join(dir, '.claude');
@@ -152,45 +144,27 @@ function resetCodexHome(setup?: { configToml?: string; authJson?: boolean }): vo
   if (setup.authJson) fs.writeFileSync(path.join(HOME, '.codex', 'auth.json'), '{"mode":"chatgpt"}');
 }
 
-// cpx 运行器：必须用 async spawn 而非 spawnSync——本文件的 11 个假上游
-// 监听器跑在 vitest worker 进程内，spawnSync 会阻塞 worker 事件循环，
-// 监听器无法 accept（proxy 转发 → 监听器卡死 → agent 超时，结构性死锁；
-// cpx-nonstream-stall e2e 同款 async spawn 先例）。
-function runCpx(profile: 'claude' | 'openai' | 'codex' | 'dsh', extra: {
+// cpx 运行器（harness runCpx 适配本组用例形态）：async spawn 是硬约束——
+// 本文件的 11 个假上游监听器跑在 vitest worker 进程内，spawnSync 会阻塞
+// worker 事件循环，监听器无法 accept（proxy 转发 → 监听器卡死 → agent
+// 超时，结构性死锁）。沙箱侧：HOME 隔离 + 端点发现变量默认剥除（本组
+// 用例的既有 SCRUB 纪律），用例要的变量经 env 显式给。
+async function runCpx(profile: 'claude' | 'openai' | 'codex' | 'dsh', extra: {
   env?: Record<string, string>;
   cwd?: string;
   call?: boolean;
   dump?: string;
-} = {}): Promise<{ status: number | null; signal: string | null; stderr: string }> {
-  const env: NodeJS.ProcessEnv = { ...process.env };
-  for (const k of SCRUB_KEYS) delete env[k];
-  env.HOME = HOME;
-  env.CONTEXT_PROXY_DIR = CAPTURES;
-  // 钉死不可达：探测必败 → 不机会主义导入开发机在跑的真 insight、不开浏览器
-  env.CONTEXT_CPX_INSIGHT_BASE = 'http://127.0.0.1:1';
-  env.CPX_TEST_AGENT_MODE = profile;
-  if (extra.call) env.CPX_TEST_AGENT_CALL = '1';
-  if (extra.dump) env.FAKE_AGENT_DUMP = extra.dump;
-  Object.assign(env, extra.env ?? {});
-  return new Promise((resolve, reject) => {
-    const child = spawn('bash', [WRAPPER, '--agent', profile, '--', AGENT], {
-      stdio: ['ignore', 'pipe', 'pipe'],
-      env,
-      cwd: extra.cwd ?? TMP,
-    });
-    let stderr = '';
-    const timer = setTimeout(() => {
-      child.kill('SIGKILL');
-      reject(new Error(`cpx run timeout (profile=${profile})`));
-    }, 120_000);
-    child.stdout?.on('data', () => { /* cpx 日志走 stderr */ });
-    child.stderr?.on('data', (d: Buffer) => { stderr += d; });
-    child.on('error', (err) => { clearTimeout(timer); reject(err); });
-    child.on('close', (code, signal) => {
-      clearTimeout(timer);
-      resolve({ status: code, signal, stderr });
-    });
+} = {}): Promise<{ status: number; stderr: string }> {
+  const r = await harnessRunCpx(sandbox, ['--agent', profile, '--', AGENT], {
+    cwd: extra.cwd ?? sandbox.root,
+    env: {
+      CPX_TEST_AGENT_MODE: profile,
+      ...(extra.call ? { CPX_TEST_AGENT_CALL: '1' } : {}),
+      ...(extra.dump ? { FAKE_AGENT_DUMP: extra.dump } : {}),
+      ...extra.env,
+    },
   });
+  return { status: r.code, stderr: r.output };
 }
 
 // —— 断言 ——————————————————————————————————————————————————————
@@ -212,7 +186,7 @@ describe('cpx 上游解析：镜像契约（各族解析链 = agent 自身配置
   it('① claude 客户案：settings 无 env 段 + 进程 env ANTHROPIC_BASE_URL → 转发到该地址；进程 env 的 apiKey 经 --settings 注入', async () => {
     writeClaudeSettings(HOME, undefined);
     const before = hits.length;
-    const dump = path.join(TMP, 'dump-case1.json');
+    const dump = path.join(sandbox.root, 'dump-case1.json');
     const r = await runCpx('claude', {
       call: true,
       dump,

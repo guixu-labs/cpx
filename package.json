@@ -1,6 +1,6 @@
 {
   "name": "context-cpx",
-  "version": "0.1.13",
+  "version": "0.1.14",
   "type": "module",
   "description": "Generic agent<->model plaintext capture proxy for Context-Insight",
   "license": "SEE LICENSE IN LICENSE",
@@ -20,9 +20,9 @@
     "postinstall": "node scripts/postinstall.mjs",
     "proxy": "tsx src/server.ts",
     "cpx-cli": "tsx src/cli/cpx-cli.ts",
-    "test": "bash scripts/run-tests.sh",
-    "test:e2e": "bash scripts/run-tests.sh e2e",
-    "test:all": "bash scripts/run-tests.sh && bash scripts/run-tests.sh e2e"
+    "test": "bash scripts/run-tests.sh && bash scripts/run-tests.sh e2e",
+    "test:ut": "bash scripts/run-tests.sh",
+    "test:e2e": "bash scripts/run-tests.sh e2e"
   },
   "dependencies": {
     "7zip-bin": "^5.2.0",
