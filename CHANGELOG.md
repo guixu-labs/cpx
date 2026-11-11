@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+### Fixed
+- 【codex 系统提示并存形态短路（技能清单被吞）】wire 三形态实测钉死后 `systemPromptOf` 收敛合并语义：instructions 与 developer 消息并存（客户网关形态——instructions=基座 + developer=skills_instructions 技能清单块）时原实现短路只取 instructions，技能清单块整体丢失 → insight Skills 覆盖卡降级「系统提示未含 skills 注入段」。现三形态统一合并：instructions 与 developer 全取拼接，互相包含（超集重叠容灾）时取超集去重；developer-only / instructions-only 两形态行为不变
+- 【工具时长倒挂归零（时间轴语义修正）】ProxyRecord 新增 `lastByteAt`（客户端感知的响应结束 = 最后一次 res.write；非流 = completedAt）：completedAt 是记录 finalize 时刻，含 wire dump I/O 等尾段开销——SSE 客户端收到终止事件即执行工具并发起下一请求、不等流关闭，用 completedAt 当响应结束会出现「下一轮 receivedAt 早于上一轮 completedAt」的倒挂（真机实测 31ms），下游 tool_use → tool_result 行时间跨度变负、工具时长被 clamp 成 0。两个 emitter（codex/claude）的 assistant 行时间戳改用 `lastByteAt ?? completedAt`，`latencyMs` 同步改末字节口径（turn 时长不再虚含尾段 I/O）
+- 【codex 捕获 reasoning token 丢失】cc-wire-round 信封补 `reasoningTokens`（opencode-emitter 既有同款单点通道）：responses 重组器虽已把 `output_tokens_details.reasoning_tokens` 归一进 usage 块，但 insight 的 mergedReasoning 只认信封通道——不写此处 deepseek/qwen 系思考模型的 Turn reasoningTokens 恒 0（真机实测 197 → 0 落库）
+
 ## [v0.1.14] - 2026-11-09
 
 ### Added

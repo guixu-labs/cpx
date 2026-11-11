@@ -153,7 +153,7 @@ cpx 对 agent 完全透明：转发请求与上游响应逐字节透传、密钥
 
 insight 导入与长期 serving 均直读 verbatim（`.jsonl.7z` / `.jsonl.gz` 透明解压、`cpx-` 前缀自动剥）。盘上历史 norm/ 件不受影响（不迁移不删除）。
 
-每行是**扩展 claude-format**：claude 原生信封（`type`/`timestamp`/`message`）冻结，扩展数据进带 `(schema, version)` 声明的扩展命名空间——wire 轮次（latency/ttft/请求参数）、输入标记、会话 meta、子代理 meta。
+每行是**扩展 claude-format**：claude 原生信封（`type`/`timestamp`/`message`）冻结，扩展数据进带 `(schema, version)` 声明的扩展命名空间——wire 轮次（latency/ttft/请求参数/reasoning token）、输入标记、会话 meta、子代理 meta。assistant 行时间戳取**末字节时刻**（客户端感知的响应结束）而非记录 finalize 时刻——SSE 客户端收到终止事件即执行工具并发下一请求，finalize 口径会与下一轮请求到达倒挂，工具时长被下游 clamp 成 0。
 
 ## 导入分析
 

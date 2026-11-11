@@ -64,6 +64,15 @@ export interface ProxyRecord {
   protocol: Protocol;
   receivedAt: number;
   completedAt: number;
+  /** 真实末字节时刻（流式 = 最后一次 res.write；非流 = 响应体读毕，即
+   *  completedAt）。completedAt 是记录 finalize 时刻（含 wire dump I/O、
+   *  reassembly 等尾段开销）——SSE 客户端收到终止事件即执行工具并发起
+   *  下一请求、不等流关闭，用 completedAt 当「响应结束」会出现下一轮
+   *  receivedAt 早于上一轮 completedAt 的倒挂（真机实测 31ms），下游
+   *  tool_use → tool_result 的行时间跨度变负、时长被 clamp 成 0。
+   *  lastByteAt 才是时间轴语义的响应结束；null = 未知（旧记录），消费方
+   *  回落 completedAt。 */
+  lastByteAt: number | null;
   latencyMs: number;
   // Time to first token (streaming only); null for non-stream responses.
   ttftMs: number | null;

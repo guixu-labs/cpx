@@ -17,13 +17,22 @@
 //   - request body: {input: [...items]} (not messages[], not content blocks)
 //   - items: message / function_call / function_call_output (independent items,
 //     not blocks inside a message)
-//   - system prompt: `instructions` field where present (older codex / some
-//     gateways), else the leading developer-role input message (codex 0.161
-//     real wire: 23KB base prompt re-sent verbatim in every request, main and
-//     subagent threads alike) — both surfaces are captured into the claude
-//     layout's `system` extension field for the Full Context reader; developer
+//   - system prompt: three wire shapes, all captured into the claude layout's
+//     `system` extension field for the Full Context reader; developer
 //     messages never become timeline lines (static context, not events — same
-//     D1 semantics as the codex native adapter)
+//     D1 semantics as the codex native adapter):
+//       A. developer-role input messages carry the whole prompt (codex 0.161/
+//          0.162 real wire: 23KB base + skills_instructions block re-sent
+//          verbatim in every request, main and subagent threads alike;
+//          `instructions` absent)
+//       B. `instructions` field alone (older codex / some gateways)
+//       C. BOTH present (customer-gateway wire, 146-request dump verified:
+//          instructions = base prompt, developer = skills_instructions block
+//          — each surface carries HALF of the system prompt)
+//     Shape C is why the surfaces are MERGED, not short-circuited: returning
+//     `instructions` alone drops the skills block entirely, and insight's
+//     skills extractor then degrades the Coverage card ("系统提示未含 skills
+//     注入段"). See systemPromptOf for the merge rules.
 //
 // Output format is the SAME extended claude-format + x_lake as the other
 // two emitters, so the single claude-jsonl adapter consumes all three.
@@ -223,20 +232,32 @@ function spawnTaskOf(input: unknown): string | null {
   return null;
 }
 
-// codex 系统提示词的 wire 双形态（见文件头）：instructions 字段优先，缺省
-// 时取 input 里的 developer 消息全文（0.161 真机唯一形态——每请求全量重发，
-// 主/子线程同基座）。只做 verbatim 归一，不做解释；产出进 claude 布局的
-// system 扩展字段（claude-emitter 的 request.body.system 同款位置），insight
-// 的 readFullContext 零改动消费。
+// codex 系统提示词的 wire 三形态（见文件头）：instructions 与 developer
+// 消息各自可能承载系统提示词的一半（客户网关形态：instructions=基座、
+// developer=skills_instructions 技能清单块），所以两路全取、合并产出——
+// 短路取其一会把另一半（往往是技能清单）整个丢掉，insight 的 skills
+// 全集提取（<skills_instructions> 块识别）随之降级。归一规则：只做
+// verbatim 拼接，不做解释；两路内容重叠（互相包含，即一路是另一路的
+// 子集——同基座重复注入的容灾）时取超集去重。产出进 claude 布局的
+// system 扩展字段（claude-emitter 的 request.body.system 同款位置），
+// insight 的 readFullContext 零改动消费。
 function systemPromptOf(body: ResponseRequestBody): string | undefined {
-  if (typeof body.instructions === 'string' && body.instructions) return body.instructions;
+  const instructions = typeof body.instructions === 'string' && body.instructions
+    ? body.instructions
+    : null;
   const parts: string[] = [];
   for (const item of body.input ?? []) {
     if (item.type !== 'message' || (item.role ?? 'user') !== 'developer') continue;
     const text = (item.content ?? []).map(c => c.text ?? '').join('');
     if (text) parts.push(text);
   }
-  return parts.length > 0 ? parts.join('\n\n') : undefined;
+  if (instructions == null) return parts.length > 0 ? parts.join('\n\n') : undefined;
+  if (parts.length === 0) return instructions;
+  const joined = parts.join('\n\n');
+  if (instructions.includes(joined) || joined.includes(instructions)) {
+    return instructions.length >= joined.length ? instructions : joined;
+  }
+  return `${instructions}\n\n${joined}`;
 }
 
 function convertInputItem(item: ResponseInputItem): { type: string; message: { role: string; content: string | AnthropicContentBlock[] }; source: string; x_lake: { schema: string; version: number; data: { roundIndex: number; kind: string } } } | null {
@@ -425,6 +446,11 @@ export function emit(rec: ProxyRecord): void {
   ctx.anchorHash = items.length > 0 ? prefixAnchor(items, items.length) : null;
 
   // 5) Assistant line for this round, into the same thread file.
+  // 行时间戳用 lastByteAt（客户端感知的响应结束）：completedAt 含 dump I/O
+  // 等尾段开销，SSE 客户端收终止事件即执行工具并发下一请求——用 completedAt
+  // 会与下一轮 receivedAt 倒挂（真机实测 31ms），tool_use → tool_result 的
+  // 时间跨度变负、工具时长被 clamp 成 0。
+  const usage = mapUsage(rec.response.usage);
   appendClaudeLine(targetFile, {
     type: 'assistant',
     message: {
@@ -432,9 +458,9 @@ export function emit(rec: ProxyRecord): void {
       id: crypto.randomUUID(),
       content: contentBlocks,
       model: rec.response.model,
-      usage: mapUsage(rec.response.usage),
+      usage,
     },
-    timestamp: toISO(rec.completedAt),
+    timestamp: toISO(rec.lastByteAt ?? rec.completedAt),
     system: systemPrompt,
     tools: Array.isArray(body.tools) ? body.tools : undefined,
     source: proxySourceMarker(rec.protocol, rec.request.body),
@@ -446,6 +472,11 @@ export function emit(rec: ProxyRecord): void {
       requestParams: { model: body.model ?? rec.request.model },
       latencyMs: rec.latencyMs,
       ttftMs: rec.ttftMs ?? undefined,
+      // 思考计费通道（opencode-emitter 同款单点）：usage 块虽带
+      // reasoning_tokens（重组器从 output_tokens_details 归一），insight 的
+      // mergedReasoning 只认信封通道——不写这里 deepseek/qwen 系思考模型
+      // 的 Turn reasoningTokens 恒 0（真机实测 197 → 0 丢失）
+      reasoningTokens: usage?.reasoning_tokens,
       stopReason: rec.response.stop_reason ?? undefined,
       status: rec.response.status,
     }),
