@@ -265,6 +265,10 @@ async function handleStream(
   }
 
   let dumpedText = '';
+  // 客户端感知的响应结束 = 最后一次 res.write（SSE 客户端收到终止事件即
+  // 执行工具并发下一请求、不等流关闭——completedAt 含 dump I/O 等尾段
+  // 开销，用它当响应结束会与下一轮 receivedAt 倒挂，见 ProxyRecord 注释）
+  let lastByteAt: number | null = null;
   try {
     const decoder = new TextDecoder();
     for (;;) {
@@ -274,6 +278,7 @@ async function handleStream(
         const chunk = decoder.decode(value, { stream: true });
         reassembler.feed(chunk);
         res.write(value);
+        lastByteAt = Date.now();
         if (dumpId && dumpedText.length < DUMP_BODY_CAP) dumpedText += chunk;
       }
     }
@@ -297,7 +302,7 @@ async function handleStream(
   // 落盘（见 ordered-dispatch.ts）。buildRecord 抛错时提交 null 推进序列，
   // 绝不让后续记录滞留内存。emit 自身的落盘错误在 flush 内部兜底。
   try {
-    orderedDispatch.submit(arrivalSeq, buildRecord(sid, protocol, requestBody, upstreamRes.status, reassembled, receivedAt, completedAt, req, ttftMs));
+    orderedDispatch.submit(arrivalSeq, buildRecord(sid, protocol, requestBody, upstreamRes.status, reassembled, receivedAt, completedAt, req, ttftMs, lastByteAt));
   } catch (e) {
     orderedDispatch.submit(arrivalSeq, null);
     console.error('[proxy] emit failed (capture may be incomplete):', e instanceof Error ? e.message : e);
@@ -354,7 +359,7 @@ async function handleNonStream(
   const completedAt = Date.now();
   let rec: ProxyRecord | null = null;
   try {
-    rec = buildRecord(sid, protocol, requestBody, upstreamRes.status, reassembled, receivedAt, completedAt, null, null);
+    rec = buildRecord(sid, protocol, requestBody, upstreamRes.status, reassembled, receivedAt, completedAt, null, null, completedAt);
   } catch { /* abandoned — submit(null) still advances the sequence */ }
   orderedDispatch.submit(arrivalSeq, rec);
 
@@ -371,7 +376,8 @@ function buildRecord(
   receivedAt: number,
   completedAt: number,
   req: http.IncomingMessage | null,
-  ttftMs: number | null
+  ttftMs: number | null,
+  lastByteAt: number | null = null
 ): ProxyRecord {
   const model = (requestBody && typeof requestBody === 'object' && 'model' in requestBody)
     ? String((requestBody as { model: unknown }).model) : null;
@@ -387,7 +393,10 @@ function buildRecord(
     protocol,
     receivedAt,
     completedAt,
-    latencyMs: completedAt - receivedAt,
+    lastByteAt,
+    // 响应时长按客户端感知口径（末字节）：completedAt 含 dump I/O 等尾段
+    // 开销，用它会把 turn 时长虚高（真机实测 31ms 偏差）
+    latencyMs: (lastByteAt ?? completedAt) - receivedAt,
     ttftMs,
     request: {
       path: req?.url ?? '',

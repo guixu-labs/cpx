@@ -18,6 +18,7 @@ import { VERSION, VERSION_DISPLAY } from '../version.ts';
 import { redactString } from '../redactor.ts';
 import { parseOpencodeProvider, readAuthProvidersFromFile, readCustomProvidersFromRoots, resolveProviderIds, opencodeConfigRoots, readModelsDevUpstreams } from './opencode-providers';
 import { codexProviderTable, tunnelBaseUrl, providerUpstreamOrigins } from './codex-providers';
+import { parseCodexSubcommands, withCodexTunnel } from './codex-args';
 import { loopbackNoProxy } from './child-env';
 import { resolveTsxLoader } from './tsx-launcher';
 import { parseArgs, type AgentProfile } from './cpx-args';
@@ -472,14 +473,20 @@ function buildLaunch(profile: AgentProfile, proxyPort: number, claude: ClaudeAut
       //    openai provider 的 ChatGPT 登录 auth。
       // codex 在 base_url 后追加 /responses（wire_api=responses），所以
       // base_url 需带 /v1 后缀 → codex 发 POST /v1/responses，proxy 按路径
-      // 分发。注入的 -c 排在 agentArgs 前——用户自己的 -c 恒可覆盖。
+      // 分发。注入位置在 codex-args.ts（withCodexTunnel）：子命令位（exec/
+      // resume/… token 后）与用户自己的 -c 同层按键覆盖共存——0.162 实测
+      // 全局位 -c 在子命令位出现任何 -c 时被整组丢弃（隧道静默失效）。
+      const subcommands = parseCodexSubcommands(probeHelp(agentCmd, [], rootHelpCache, agentCmd));
+      const tunnel = (overrides: string[]): string[] =>
+        withCodexTunnel(agentArgs, overrides.flatMap((o) => ['-c', o]), subcommands);
       const table = codexProviderTable();
       const tunnelIds = table ? Object.keys(table.providers) : [];
       if (tunnelIds.length > 0) {
         const overrides = tunnelIds.map(
           (id) => `model_providers.${id}.base_url="${tunnelBaseUrl(proxyUrl, id, table!.providers[id].baseUrl)}"`
         );
-        return { env: {}, args: [...overrides.flatMap((o) => ['-c', o]), '-c', `openai_base_url="${proxyUrl}/v1"`, ...agentArgs] };
+        overrides.push(`openai_base_url="${proxyUrl}/v1"`);
+        return { env: {}, args: tunnel(overrides) };
       }
       if (process.env.OPENAI_API_KEY) {
         const overrides = [
@@ -489,11 +496,11 @@ function buildLaunch(profile: AgentProfile, proxyPort: number, claude: ClaudeAut
           'model_providers.cpx_proxy.env_key="OPENAI_API_KEY"',
           'model_providers.cpx_proxy.wire_api="responses"',
           'model_providers.cpx_proxy.requires_openai_auth=false',
-        ].flatMap((o) => ['-c', o]);
-        return { env: {}, args: [...overrides, ...agentArgs] };
+        ];
+        return { env: {}, args: tunnel(overrides) };
       }
       // ChatGPT 登录用户：仅覆盖 base_url，不碰 auth
-      return { env: {}, args: ['-c', `openai_base_url="${proxyUrl}/v1"`, ...agentArgs] };
+      return { env: {}, args: tunnel([`openai_base_url="${proxyUrl}/v1"`]) };
     }
     case 'dsh':
       // dsh（DeepSeek Harness）默认模型出口就是 Anthropic Messages 协议，

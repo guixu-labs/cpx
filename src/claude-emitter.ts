@@ -526,7 +526,10 @@ export function emit(rec: ProxyRecord): void {
       model: rec.response.model,
       usage: mapUsage(rec.response.usage),
     },
-    timestamp: toISO(rec.completedAt),
+    // lastByteAt（客户端感知的响应结束）：completedAt 含 dump I/O 等尾段
+    // 开销，SSE 客户端收终止事件即执行工具/发下一请求——用 completedAt 会
+    // 与下一轮 receivedAt 倒挂，工具时长被 clamp 成 0（codex-emitter 同款）
+    timestamp: toISO(rec.lastByteAt ?? rec.completedAt),
     system: body.system ?? undefined,
     tools: Array.isArray(body.tools) ? body.tools : undefined,
     version: ccVersionFromSystem(body.system) ?? undefined,
