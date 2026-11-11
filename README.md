@@ -97,6 +97,7 @@ cpx --agent openai -- <cmd>     # 显式指定 profile
 | 全局/窗口级梯子（HTTP(S)_PROXY） | proxy 出口遵循环境代理；agent→proxy 本地跳恒直连（自动注入 NO_PROXY） |
 | TUN 模式梯子 / 无代理直连 | 透明路由 / 直连回退 |
 | 自定义 provider（`~/.codex/config.toml` 的 `[model_providers.*]`，如 volcano/deepseek 网关） | 路径保真隧道：所有 provider 的 base_url 重定向到本地 proxy，转发与直连字节级同构 |
+| 用户自带 `-c`（如 `-c sandbox_mode="workspace-write"`） | 隧道 `-c` 自动注入**子命令位**（exec/resume/… token 后，别名 `e`/`a` 亦识别）：codex 0.162 起子命令位一旦出现任何 `-c`，全局位的 `-c` 整组被丢弃——同层共存才能保住隧道（TUI 无子命令不受影响） |
 | 多子代理会话（spawn_agent） | 每线程独立捕获文件 + 泳道元数据（nickname/agentId 自动关联） |
 
 **第三步：实时观察捕获（可选）**
