@@ -1,5 +1,9 @@
 # Changelog
 
+## [Unreleased]
+### Changed
+- 【仓间零依赖收口】vitest 收编为本包 devDependency（此前未声明，运行时借兄弟仓 insight 的二进制、缺失时替兄弟仓 npm install——两仓工具面耦合）：`resolve_vitest` 去掉 `../insight` / `../context-insight` 双名探测与兄弟仓自愈安装，vitest 缺失一律本包 `npm install`；bootstrap 回归锁重写为双锁——行为锁（无兄弟仓布局下自愈闭环 exit 0 + npm 落点断言）与静态哨兵（脚本文本零借用路径 + package.json 必须声明 vitest，防回潮）。fresh clone 单仓 `npm install && npm test` 即可全量跑通，不再要求 insight 并排 checkout
+
 ## [v0.1.15] - 2026-11-11
 ### Fixed
 - 【codex 子命令位 -c 丢弃全局位隧道（sandbox 等场景捕获零落盘）】codex 0.162 的 exec 内部经 in-process app-server 建会话（rpc thread/start），配置分层「替换而非合并」：子命令位（exec/resume/… token 之后）一旦出现任何用户 `-c`（如 `-c sandbox_mode="workspace-write"`，与键值无关、read-only 同样触发），全局位的 `-c` 整组被丢弃——cpx 注入的 base_url 隧道静默失效、请求直连真 upstream、捕获零落盘（`no capture file produced`）。三重铁证钉死：死端口探测（全局位死端口 + 子命令位任意 `-c` → 请求仍成功）、RUST_LOG=debug（thread/start 会话的 base_url 为真实网关）、连接级监视（零 proxy 流量、与常驻 app-server daemon 无关）。修法（`codex-args.ts` 纯函数模块）：隧道 `-c` 改注入**子命令位**——子命令 token 之后、与用户自己的 `-c` 同层按键覆盖共存（同层任意顺序实测共存）；子命令集合运行时探测 `codex --help` 的 Commands: 段（含 `[aliases: e]` 别名与描述折行），全局位带值 flag（-c/-p/-s/-m/-C…）先于子命令时跳值定位，TUI（无子命令）维持全局位前置，探测失败 fail-safe 回退全局位（行为等同修复前）。真机验证：带 `-c sandbox_mode` 的会话捕获 0KB → 16.8KB 正常落盘导入

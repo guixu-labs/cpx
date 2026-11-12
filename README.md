@@ -210,10 +210,10 @@ API key / 凭据永不落盘。headers 本就不落盘；清洗的是**内容级
 ## 测试
 
 ```bash
-npm run test        # vitest run — 全部测试
+npm run test        # ut + e2e 全部（默认门禁）
 ```
 
-proxy 测试自包含：只验证 emitter/writer/redactor 等模块的 JSON 输出契约，不依赖 context-insight / Prisma——两侧仅靠 claude-format 格式契约耦合，可独立演进。
+proxy 测试自包含：只验证 emitter/writer/redactor 等模块的 JSON 输出契约，不依赖 context-insight / Prisma——两侧仅靠 claude-format 格式契约耦合，可独立演进。测试工具链同样自包含（vitest 为本包 devDependency）：fresh clone 单仓 `npm install && npm test` 即可全量跑通，不要求 insight 并排 checkout。
 
 ## 架构原则
 
