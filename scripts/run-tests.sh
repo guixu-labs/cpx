@@ -4,17 +4,16 @@
 #   ./scripts/run-tests.sh e2e    # e2e 层：tests/e2e（真 CLI/发布流水线用例）
 #   追加 --coverage / -c：ut 层附带覆盖率（与 e2e 同给也仅 ut 生效）
 # COVERAGE=1：ut 层附带 --coverage（v8 provider，统计 src/ 全量，报告落
-# coverage/）。provider 包 @vitest/coverage-v8 是本包 devDependency——vitest
-# 二进制虽借 insight 的，provider 模块从本包目录解析，借二进制不连带，
-# 缺失时自愈 npm install。
+# coverage/）。provider 包 @vitest/coverage-v8 与 vitest 均为本包
+# devDependency，缺失时自愈 npm install。
 # 依赖自举（fresh clone / 流水线一条命令可跑）：
 #   1) cpx 自己的 dependencies 任一缺失（node_modules 目录级校验，含
 #      package.json 后加的新依赖——只查 .bin/tsx 探测不到）→ 本包 npm install
 #      —— 用例 spawn 的 proxy server 顶层 import fzstd，祖先链解析够不到
 #      insight 的 node_modules，缺了必挂（.bin/tsx 同时让 server 走本地
 #      PROXY_TSX，不再退 npx 走网络）
-#   2) vitest 仍缺（cpx 未声明该依赖）→ 借同仓 insight 的，必要时替它装好
-#      （npm run test:e2e 同样转调本脚本——vitest 不在本包 .bin，npm script
+#   2) vitest 缺失（本包 devDependency）→ 本包 npm install（npm run
+#      test:e2e 同样转调本脚本——vitest 不在本包 .bin 时，npm script
 #      直接裸调必 command not found）
 # CONTEXT_TEST_SKIP_SLOW=1：ut 层跳过已知环境敏感 it 用例（skipIf 门控），
 # 避免流水线误红；e2e 层不设，透传环境由调用方控制。
@@ -59,37 +58,20 @@ fi
 resolve_vitest() {
   if [ -x node_modules/.bin/vitest ]; then
     VITEST="node_modules/.bin/vitest"
-  elif [ -x ../insight/node_modules/.bin/vitest ]; then
-    VITEST="../insight/node_modules/.bin/vitest"
-  elif [ -x ../context-insight/node_modules/.bin/vitest ]; then
-    VITEST="../context-insight/node_modules/.bin/vitest"
   else
     return 1
   fi
 }
 
-# 自愈安装目标：与 resolve_vitest 的兄弟名探测保持一致（monorepo 布局 insight /
-# 独立 checkout 名 context-insight），命中哪个兄弟仓就替哪个装——杜绝「探测
-# 认双名、安装只认 insight」的硬编码漂移。
-resolve_insight_dir() {
-  if [ -f ../insight/package.json ]; then
-    printf '%s\n' '../insight'
-  elif [ -f ../context-insight/package.json ]; then
-    printf '%s\n' '../context-insight'
-  else
-    return 1
-  fi
-}
-
+# vitest 是本包 devDependency（0.1.15 起收编——此前借兄弟仓 insight 的二进制，
+# 两仓存在工具面耦合；现自有依赖，仓间零依赖）。缺失自愈 = 本包 npm install。
 if ! resolve_vitest; then
-  echo "==> [cpx] insight deps missing (cpx borrows its vitest), installing..."
-  INSIGHT_DIR="$(resolve_insight_dir)" \
-    || { echo "no sibling repo found (need insight/ or context-insight/ next to cpx) to borrow vitest from" >&2; exit 1; }
-  (cd "$INSIGHT_DIR" && npm install --no-audit --no-fund) || exit 1
+  echo "==> [cpx] vitest missing (own devDependency), installing..."
+  npm install --no-audit --no-fund || exit 1
   resolve_vitest || { echo "vitest still missing after npm install" >&2; exit 1; }
 fi
 
-# coverage provider 从本包目录解析（借 insight 的 vitest 二进制不连带），
+# coverage provider 从本包目录解析，
 # ut 层 COVERAGE=1 且缺失时自愈安装 devDependencies（e2e 不收覆盖率，
 # 不做此检查——离线环境跑 e2e 不应先挂在装依赖上）
 if [ "$MODE" = "ut" ] && [ "${COVERAGE:-0}" = "1" ] && ! node -e "require.resolve('@vitest/coverage-v8')" >/dev/null 2>&1; then
