@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [v0.1.15] - 2026-11-11
 ### Fixed
 - 【codex 子命令位 -c 丢弃全局位隧道（sandbox 等场景捕获零落盘）】codex 0.162 的 exec 内部经 in-process app-server 建会话（rpc thread/start），配置分层「替换而非合并」：子命令位（exec/resume/… token 之后）一旦出现任何用户 `-c`（如 `-c sandbox_mode="workspace-write"`，与键值无关、read-only 同样触发），全局位的 `-c` 整组被丢弃——cpx 注入的 base_url 隧道静默失效、请求直连真 upstream、捕获零落盘（`no capture file produced`）。三重铁证钉死：死端口探测（全局位死端口 + 子命令位任意 `-c` → 请求仍成功）、RUST_LOG=debug（thread/start 会话的 base_url 为真实网关）、连接级监视（零 proxy 流量、与常驻 app-server daemon 无关）。修法（`codex-args.ts` 纯函数模块）：隧道 `-c` 改注入**子命令位**——子命令 token 之后、与用户自己的 `-c` 同层按键覆盖共存（同层任意顺序实测共存）；子命令集合运行时探测 `codex --help` 的 Commands: 段（含 `[aliases: e]` 别名与描述折行），全局位带值 flag（-c/-p/-s/-m/-C…）先于子命令时跳值定位，TUI（无子命令）维持全局位前置，探测失败 fail-safe 回退全局位（行为等同修复前）。真机验证：带 `-c sandbox_mode` 的会话捕获 0KB → 16.8KB 正常落盘导入
 - 【codex 系统提示并存形态短路（技能清单被吞）】wire 三形态实测钉死后 `systemPromptOf` 收敛合并语义：instructions 与 developer 消息并存（客户网关形态——instructions=基座 + developer=skills_instructions 技能清单块）时原实现短路只取 instructions，技能清单块整体丢失 → insight Skills 覆盖卡降级「系统提示未含 skills 注入段」。现三形态统一合并：instructions 与 developer 全取拼接，互相包含（超集重叠容灾）时取超集去重；developer-only / instructions-only 两形态行为不变
