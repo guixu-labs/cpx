@@ -113,6 +113,12 @@ describe('protocolFromPath：provider 隧道的根路径 responses 识别', () =
     expect(r.sid).toBe('cpx-pinned-sid');
   });
 
+  it('recognizes the optional trailing slash accepted by the proxy route', () => {
+    expect(resolveSession('/gw/responses/', () => null, null, 'sid').protocol).toBe('responses');
+    expect(resolveSession('/gw/api/v3/responses/', () => null, null, 'sid').protocol).toBe('responses');
+    expect(resolveSession('/gw/responses-extra/', () => null, null, 'sid').protocol).toBeNull();
+  });
+
   it('/<providerId>/<深层 path>/responses 同样识别（路径保真）', () => {
     expect(resolveSession('/gw/api/v3/responses', () => null, null, 'sid').protocol).toBe('responses');
   });

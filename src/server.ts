@@ -269,6 +269,15 @@ async function handleStream(
   // 执行工具并发下一请求、不等流关闭——completedAt 含 dump I/O 等尾段
   // 开销，用它当响应结束会与下一轮 receivedAt 倒挂，见 ProxyRecord 注释）
   let lastByteAt: number | null = null;
+  // Capture is best-effort: an unexpected event must not interrupt the
+  // response delivered to the caller, including later chunks of the stream.
+  const captureChunk = (chunk: string) => {
+    try {
+      reassembler.feed(chunk);
+    } catch (e) {
+      console.error('[proxy] stream capture failed:', e instanceof Error ? e.message : e);
+    }
+  };
   try {
     const decoder = new TextDecoder();
     for (;;) {
@@ -276,14 +285,14 @@ async function handleStream(
       if (done) break;
       if (value) {
         const chunk = decoder.decode(value, { stream: true });
-        reassembler.feed(chunk);
+        captureChunk(chunk);
         res.write(value);
         lastByteAt = Date.now();
         if (dumpId && dumpedText.length < DUMP_BODY_CAP) dumpedText += chunk;
       }
     }
     // flush trailing multibyte bytes
-    reassembler.feed(decoder.decode());
+    captureChunk(decoder.decode());
   } catch {
     // client disconnect — still record what we captured
   }

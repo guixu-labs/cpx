@@ -1,5 +1,5 @@
 // Copyright (c) 2025-2026 Huawei Technologies Co., Ltd.
-// This program is free software: you can redistribute it and/or modify it under the terms of
+// This program is free software, you can redistribute it and/or modify it under the terms and conditions of
 // CANN Open Software License Agreement Version 2.0 (the "License").
 // Please refer to the License for details. You may not use this file except in compliance with the License.
 // THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
@@ -64,6 +64,26 @@ describe('stripJsoncComments（字符串感知）', () => {
 });
 
 describe('readCustomProvidersFromRoots', () => {
+  it.each(['json', 'jsonc'])('reads OpenCode .%s trailing commas without modifying quoted text', (extension) => {
+    const root = path.join(TMP, `root-${extension}-trailing`);
+    fs.mkdirSync(root, { recursive: true });
+    fs.writeFileSync(path.join(root, `opencode.${extension}`), [
+      '{',
+      '  "provider": { "gateway": {',
+      '    "options": { "baseURL": "https://gw.example/a,}/v1", /* comment */ },',
+      '    "models": ["a", /* last item */ ],',
+      '  }, },',
+      '}',
+    ].join('\n'));
+    expect(readCustomProvidersFromRoots([root])).toEqual({ gateway: 'https://gw.example/a,}/v1' });
+  });
+  it.each(['json', 'jsonc'])('still rejects malformed OpenCode .%s configuration', (extension) => {
+    const root = path.join(TMP, `root-${extension}-malformed`);
+    fs.mkdirSync(root, { recursive: true });
+    fs.writeFileSync(path.join(root, `opencode.${extension}`),
+      '{"provider": {"gateway": {"options": {"baseURL": "https://gw.example/v1"},,}}}');
+    expect(readCustomProvidersFromRoots([root])).toEqual({});
+  });
   it('客户现场形态：opencode.jsonc 自定义 gateway provider（含注释）被识别', () => {
     const root = path.join(TMP, 'root-jsonc');
     fs.mkdirSync(path.join(root, 'opencode'), { recursive: true });
@@ -212,6 +232,9 @@ describe('resolveProviderIds', () => {
       .toEqual(['gateway']);
     expect(parseOpencodeProvider(['-m=example-cn/model-a2'])).toBe('example-cn');
     expect(parseOpencodeProvider(['--model', 'gateway/model-a1'])).toBe('gateway');
+    expect(parseOpencodeProvider(['--model=gateway/model-a1'])).toBe('gateway');
+    expect(resolveProviderIds({ profile: 'opencode', agentArgs: ['--model=gateway/model-a1'], authProviders: [], customProviders: {} }))
+      .toEqual(['gateway']);
   });
   it('cannbot 恒含内建 cannbot provider', () => {
     expect(resolveProviderIds({ profile: 'cannbot', agentArgs: [], authProviders: [], customProviders: {} }))

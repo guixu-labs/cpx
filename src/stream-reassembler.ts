@@ -69,6 +69,7 @@ class AnthropicReassembler implements Reassembler {
     } catch {
       return;
     }
+    if (typeof event !== 'object' || event === null || Array.isArray(event)) return;
     this.handleEvent(event);
   }
 
@@ -203,6 +204,7 @@ class OpenAIReassembler implements Reassembler {
     } catch {
       return;
     }
+    if (typeof event !== 'object' || event === null || Array.isArray(event)) return;
     if (typeof event.model === 'string') this.model = event.model;
     const choices = event.choices as Array<Record<string, unknown>> | undefined;
     if (choices && choices.length > 0) {
@@ -315,6 +317,7 @@ class ResponsesApiReassembler implements Reassembler {
     if (!data || data === '[DONE]') return;
     let event: Record<string, unknown>;
     try { event = JSON.parse(data); } catch { return; }
+    if (typeof event !== 'object' || event === null || Array.isArray(event)) return;
     this.handleEvent(event);
   }
 

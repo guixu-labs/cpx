@@ -25,7 +25,7 @@ export function protocolFromPath(urlPath: string): Protocol | null {
   // 前缀）的 responses provider 请求形如 /<providerId>/responses——codex
   // 对 responses wire 恒追加 /responses 后缀，按后缀识别与 /v1 形态等价
   // （server.ts 的路由门同步放行该形态）。
-  if (urlPath.includes('/v1/responses') || urlPath.endsWith('/responses')) return 'responses';
+  if (urlPath.includes('/v1/responses') || /\/responses\/?$/.test(urlPath)) return 'responses';
   if (urlPath.includes('/v1/messages') || urlPath.includes('/messages')) return 'anthropic';
   if (urlPath.includes('/v1/chat/completions') || urlPath.includes('/chat/completions')) return 'openai';
   return null;

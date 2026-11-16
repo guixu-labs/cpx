@@ -1,5 +1,5 @@
 // Copyright (c) 2025-2026 Huawei Technologies Co., Ltd.
-// This program is free software: you can redistribute it and/or modify it under the terms and
+// This program is free software, you can redistribute it and/or modify it under the terms and conditions of
 // CANN Open Software License Agreement Version 2.0 (the "License").
 // Please refer to the License for details. You may not use this file except in compliance with the License.
 // THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
@@ -61,11 +61,36 @@ export function stripJsoncComments(text: string): string {
   return out;
 }
 
-// 解析单个 opencode 配置文件（.json 直读；.jsonc 剥注释）。失败返回 null。
+// OpenCode's config parser tolerates trailing commas in both .json and .jsonc.
+// Match that behavior outside strings after stripping comments.
+function stripTrailingCommas(text: string): string {
+  let out = '';
+  let inString = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (inString) {
+      out += c;
+      if (c === '\\' && i + 1 < text.length) out += text[++i];
+      else if (c === '"') inString = false;
+      continue;
+    }
+    if (c === '"') inString = true;
+    if (c === ',') {
+      let next = i + 1;
+      while (next < text.length && /\s/.test(text[next])) next++;
+      if (text[next] === '}' || text[next] === ']') continue;
+    }
+    out += c;
+  }
+  return out;
+}
+
+// 与 OpenCode 一致，两个扩展名均允许注释和尾逗号。失败返回 null。
 function parseConfigFile(file: string): Record<string, unknown> | null {
   try {
     const raw = fs.readFileSync(file, 'utf-8');
-    return JSON.parse(stripJsoncComments(raw)) as Record<string, unknown>;
+    const withoutComments = stripJsoncComments(raw);
+    return JSON.parse(stripTrailingCommas(withoutComments)) as Record<string, unknown>;
   } catch {
     return null;
   }
@@ -115,7 +140,7 @@ export function parseOpencodeProvider(agentArgs: string[]): string | null {
       const slash = m.indexOf('/');
       return slash > 0 ? m.slice(0, slash) : null;
     }
-    const eq = agentArgs[i].match(/^-m=(.+)$/);
+    const eq = agentArgs[i].match(/^(?:-m|--model)=(.+)$/);
     if (eq) {
       const m = eq[1];
       const slash = m.indexOf('/');
