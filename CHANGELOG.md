@@ -1,8 +1,14 @@
 # Changelog
 
-## [Unreleased]
+## [v0.1.16] - 2026-11-17
 ### Changed
 - 【仓间零依赖收口】vitest 收编为本包 devDependency（此前未声明，运行时借兄弟仓 insight 的二进制、缺失时替兄弟仓 npm install——两仓工具面耦合）：`resolve_vitest` 去掉 `../insight` / `../context-insight` 双名探测与兄弟仓自愈安装，vitest 缺失一律本包 `npm install`；bootstrap 回归锁重写为双锁——行为锁（无兄弟仓布局下自愈闭环 exit 0 + npm 落点断言）与静态哨兵（脚本文本零借用路径 + package.json 必须声明 vitest，防回潮）。fresh clone 单仓 `npm install && npm test` 即可全量跑通，不再要求 insight 并排 checkout
+
+### Fixed
+- 【被包裹 agent 的退出码被吞】cpx 自身进程退出码此前不透传被包裹 agent 的退出状态——agent 失败退出后 cpx 仍 0 退出，脚本/CI 无从感知。现 cpx 退出码与被包裹 agent 保持一致
+- 【捕获故障中断流转发】捕获/落盘链路出错时流转发此前被连带中断——被包裹 agent 侧会话异常断流。现捕获故障隔离：本地捕获失败不再影响流转发
+- 【provider 配置 JSONC 尾逗号解析失败】opencode 的 provider 配置文件带尾逗号（JSONC 合法形态）时解析报错、provider 发现中断（issue #111）。现按 JSONC 容错解析
+- 【--model=provider/model 长等号形态漏识】provider 发现只认 `--model provider/model` 与 `-m=…` 两种形态，`--model=provider/model` 漏识——无其他 provider 时预检拒绝会话、有其他 provider 时显式指定的反而缺席（issue #113）。现三种形态同识
 
 ## [v0.1.15] - 2026-11-11
 ### Fixed
