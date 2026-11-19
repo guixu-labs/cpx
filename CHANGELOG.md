@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [v0.1.17] - 2026-11-19
 ### Fixed
 - 【codex 配置作用域失配（issue #156：harness 隔离 CODEX_HOME 下自定义 provider 场景报错）】根因实证链：客户称 codex 新版 `-c` 是「替换层」被实验否定（宿主 config 完整时按键合并正常），真因是 cpx 硬编码读**操作员** `~/.codex/config.toml` 而 harness 给子 codex 隔离了 `CODEX_HOME`——cpx 为子进程「看不见」的 provider 注入 base_url-only 覆盖 → codex 0.169 加载期就地新建无 `name` 残缺条目 → 校验失败整场崩溃（本地 0.169 逐字复现 + 加 name 即过）。架构级根治（新纯函数模块 `codex-overrides.ts`，四原则全实验钉死）：① **作用域同构**——codex 路径发现（config.toml / auth.json）全部经 `codexHome()` 单点（`$CODEX_HOME` → `~/.codex`），`agent-upstream.ts` 的 chatgpt 检测同源；② **配置层同构**——argv `-c` 覆盖层纳入发现（分层归并：子命令位胜全局位、同位后者胜，0.169 实验 E1/E2；`-c v`/`-cv`/`--config v`/`--config=v` 四形态全收，实验 F1/F2；`--` 之后不解析，实验 F3）；③ **注入自足**——config 层隧道从 base_url-only 升级为全字段回放（`name` 必带、缺失 fallback id；`env_key`/`wire_api`/`requires_openai_auth` 尽收尽回放），注入产物独立通过加载校验并保留鉴权语义，不再依赖子进程已有同名条目可合并；④ **改写优于竞争**——argv 层已有的 provider `base_url` / `openai_base_url` token 就地改值（位置与 flag 形态原样保留），不赌 codex 的 `-c` 优先级规则（0.162→0.169 已变过一次：全局位整组丢弃规则消失）。副产品：harness 靠 `-c` 注入活跃 provider 的场景（宿主 config 里没有该条目）从「结构上不可见 → 直连零捕获」修复为「token 改道 → 正常捕获」；cpx 永不改动用户的活跃 provider 选择（argv 声明 `model_provider` 时不再落入 cpx_proxy 劫持分支）
 - 【claude 配置作用域失配（同类问题，一并根治）】`CLAUDE_CONFIG_DIR` 重定位配置宇宙时（实测 claude 2.1.278：指向空目录即 "Not logged in"，凭据/配置随目录迁移），cpx 此前硬编码读操作员 `~/.claude/settings.json`（user 层）与 `~/.claude/projects`（原生转录）——harness 隔离场景会解析出错误上游（镜像契约破坏）。现 user 层经 `claudeConfigDir()` 单点（`$CLAUDE_CONFIG_DIR` → `~/.claude`），原生转录路径同步收口
