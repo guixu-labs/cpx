@@ -17,11 +17,13 @@ import { readEnvelopeWithLegacy } from '../envelope.ts';
 import { VERSION, VERSION_DISPLAY } from '../version.ts';
 import { redactString } from '../redactor.ts';
 import { parseOpencodeProvider, readAuthProvidersFromFile, readCustomProvidersFromRoots, resolveProviderIds, opencodeConfigRoots, readModelsDevUpstreams } from './opencode-providers';
-import { codexProviderTable, tunnelBaseUrl, providerUpstreamOrigins } from './codex-providers';
-import { parseCodexSubcommands, withCodexTunnel } from './codex-args';
+import { codexAuthPath } from './codex-providers';
+import { parseCodexSubcommands } from './codex-args';
+import { discoverCodexCapture, applyCodexCapture, type CodexCaptureDiscovery } from './codex-overrides';
 import { loopbackNoProxy } from './child-env';
 import { resolveTsxLoader } from './tsx-launcher';
 import { parseArgs, type AgentProfile } from './cpx-args';
+import { claudeConfigDir } from './agent-upstream';
 import { resolveProxyUpstreams, primaryUpstream, type ProxyUpstreams, type ClaudeAuthConfig } from './agent-upstream';
 import { runCompleteMain } from './cpx-complete';
 import { dropSessionScratch, sweepLeakedPlaceholders } from './cpx-scratch';
@@ -219,12 +221,14 @@ function resolveProviderIdsFor(profile: AgentProfile, agentArgs: string[]): stri
   });
 }
 
-// claude 原生转录：~/.claude/projects/<cwd-slug>/<session-id>.jsonl。捕获
-// sid 即 claude 的真实 session id（header 路由），文件名精确同名；slug
-// 规则 = cwd 非字母数字全部转 '-'（claude-code 约定）。候选不存在时全
-// projects 目录扫一遍兜底（agent 内部切换过 cwd 的场景）。
+// claude 原生转录：claude 配置根下的 projects/<cwd-slug>/<session-id>.jsonl。
+// 捕获 sid 即 claude 的真实 session id（header 路由），文件名精确同名；slug
+// 规则 = cwd 非字母数字全部转 '-'（claude-code 约定）。转录根锚定
+// claudeConfigDir（CLAUDE_CONFIG_DIR 感知——harness 重定位配置时 cpx 跟着
+// 子进程的宇宙走，作用域同构）。候选不存在时全 projects 目录扫一遍兜底
+// （agent 内部切换过 cwd 的场景）。
 function claudeNativeLogPath(sid: string): string | null {
-  const base = path.join(os.homedir(), '.claude', 'projects');
+  const base = path.join(claudeConfigDir(process.env, os.homedir()), 'projects');
   const slug = process.cwd().replace(/[^a-zA-Z0-9]/g, '-');
   const candidate = path.join(base, slug, `${sid}.jsonl`);
   if (fs.existsSync(candidate)) return candidate;
@@ -409,7 +413,7 @@ function withStandalone(agentCmd: string, agentArgs: string[]): string[] {
     : agentArgs;
 }
 
-function buildLaunch(profile: AgentProfile, proxyPort: number, claude: ClaudeAuthConfig, agentArgs: string[] = [], agentCmd = ''): LaunchPlan {
+function buildLaunch(profile: AgentProfile, proxyPort: number, claude: ClaudeAuthConfig, agentArgs: string[] = [], agentCmd = '', codexDiscovery: CodexCaptureDiscovery | null = null): LaunchPlan {
   // Per-session port: no sid encoded in URL path. The proxy pins sid via env,
   // so base_url is a clean host (survives SDK URL normalization).
   const proxyUrl = `http://127.0.0.1:${proxyPort}`;
@@ -459,48 +463,24 @@ function buildLaunch(profile: AgentProfile, proxyPort: number, claude: ClaudeAut
       return { env: { OPENCODE_CONFIG_CONTENT: JSON.stringify({ provider }) }, args: withStandalone(agentCmd, agentArgs) };
     }
     case 'codex': {
-      // codex 的三层捕获注入（按优先级）：
-      // 1) ~/.codex/config.toml 里有自定义 [model_providers.*]（网关/自建
-      //    场景：volcano、deepseek…）→ 隧道每个 provider 的 base_url 到
-      //    <proxy>/<id><原path>（路径保真），真实 upstream 走
-      //    PROVIDER_UPSTREAMS 表，proxy 剥 /<id>/ 前缀后转发——与直连字节
-      //    级同构。用户 model_provider 不动（活跃 provider 保持原样）。
-      //    同时补 openai_base_url 覆盖，让中途切回内置 openai provider 的
-      //    流量也能捕获。
-      // 2) 无表 + OPENAI_API_KEY（纯 OpenAI 用户）→ 创建 cpx_proxy provider
-      //    （requires_openai_auth=false，env_key 走 API key）并强制启用。
-      // 3) 无表无 key（ChatGPT 登录）→ 仅覆盖 openai_base_url，保留内置
-      //    openai provider 的 ChatGPT 登录 auth。
-      // codex 在 base_url 后追加 /responses（wire_api=responses），所以
-      // base_url 需带 /v1 后缀 → codex 发 POST /v1/responses，proxy 按路径
-      // 分发。注入位置在 codex-args.ts（withCodexTunnel）：子命令位（exec/
-      // resume/… token 后）与用户自己的 -c 同层按键覆盖共存——0.162 实测
-      // 全局位 -c 在子命令位出现任何 -c 时被整组丢弃（隧道静默失效）。
+      // codex 捕获注入的组合层（发现/归并/注入构造全部收在 codex-overrides.ts
+      // 纯函数模块——本文件顶层执行 main()，UT 无法直接 import）。架构原则
+      // 与 #156 根因（配置作用域失配 → base_url-only 注入在隔离 CODEX_HOME
+      // 的子进程里就地新建无 name 残缺条目 → codex 0.169 加载校验崩溃）见
+      // 该模块头注：作用域同构 / 配置层同构（argv -c 层）/ 注入自足 / 改写
+      // 优于竞争。cpx 永不改动用户的活跃 provider 选择。
       const subcommands = parseCodexSubcommands(probeHelp(agentCmd, [], rootHelpCache, agentCmd));
-      const tunnel = (overrides: string[]): string[] =>
-        withCodexTunnel(agentArgs, overrides.flatMap((o) => ['-c', o]), subcommands);
-      const table = codexProviderTable();
-      const tunnelIds = table ? Object.keys(table.providers) : [];
-      if (tunnelIds.length > 0) {
-        const overrides = tunnelIds.map(
-          (id) => `model_providers.${id}.base_url="${tunnelBaseUrl(proxyUrl, id, table!.providers[id].baseUrl)}"`
-        );
-        overrides.push(`openai_base_url="${proxyUrl}/v1"`);
-        return { env: {}, args: tunnel(overrides) };
-      }
-      if (process.env.OPENAI_API_KEY) {
-        const overrides = [
-          'model_provider=cpx_proxy',
-          'model_providers.cpx_proxy.name="cpx-proxy"',
-          `model_providers.cpx_proxy.base_url="${proxyUrl}/v1"`,
-          'model_providers.cpx_proxy.env_key="OPENAI_API_KEY"',
-          'model_providers.cpx_proxy.wire_api="responses"',
-          'model_providers.cpx_proxy.requires_openai_auth=false',
-        ];
-        return { env: {}, args: tunnel(overrides) };
-      }
-      // ChatGPT 登录用户：仅覆盖 base_url，不碰 auth
-      return { env: {}, args: tunnel([`openai_base_url="${proxyUrl}/v1"`]) };
+      if (!codexDiscovery) throw new Error('codex profile requires codexDiscovery (discoverCodexCapture)');
+      return {
+        env: {},
+        args: applyCodexCapture({
+          proxyUrl,
+          agentArgs,
+          subcommands,
+          discovery: codexDiscovery,
+          hasOpenaiApiKey: !!process.env.OPENAI_API_KEY,
+        }),
+      };
     }
     case 'dsh':
       // dsh（DeepSeek Harness）默认模型出口就是 Anthropic Messages 协议，
@@ -830,11 +810,14 @@ async function main(): Promise<void> {
   // proxy as a per-provider map so it routes /<providerId>/… to the right host —
   // fully transparent, no CONTEXT_PROXY_OPENAI_UPSTREAM needed for known providers.
   const opencodeProviderIds = profile === 'opencode' || profile === 'cannbot' ? resolveProviderIdsFor(profile, agentArgs) : [];
-  // codex: tunnel every custom [model_providers.*] from ~/.codex/config.toml
-  // to its real upstream (origin-only — the proxy re-appends the path). This
-  // is what makes gateway/self-hosted scenarios (volcano, deepseek, …)
-  // capturable at all: without the tunnel their traffic never touches cpx.
-  const codexTable = profile === 'codex' ? codexProviderTable() : null;
+  // codex 捕获发现层（作用域同构 + 配置层同构，issue #156 根修）：L1 config
+  // 表（CODEX_HOME-aware）∪ L2 argv -c 层（harness 注入的活跃 provider）。
+  // 隧道表让网关/自建场景（volcano、deepseek…）可捕获；argv 层让 harness
+  // 靠 -c 注入 provider 的场景可捕获（此前结构上看不见 → 直连零捕获）。
+  // 归并与注入原则见 codex-overrides.ts 头注。
+  const codexDiscovery = profile === 'codex'
+    ? discoverCodexCapture(agentArgs, parseCodexSubcommands(probeHelp(agentCmd, [], rootHelpCache, agentCmd)))
+    : null;
   // 上游解析单点（镜像契约）：每族解析链与该 agent 自身配置源优先级同构
   // （链序依据与 cpx 级旋钮语义详见 agent-upstream.ts 头注），逐路带
   // source 标注。per-provider 发现（二进制/配置扫描）与 codex 隧道表属
@@ -843,8 +826,9 @@ async function main(): Promise<void> {
     opencodeUpstreams: profile === 'opencode' || profile === 'cannbot'
       ? discoverProviderUpstreams(opencodeProviderIds)
       : undefined,
-    codexTunnels: codexTable ? providerUpstreamOrigins(codexTable) : undefined,
-    codexOpenaiBaseUrl: codexTable ? codexTable.openaiBaseUrl : null,
+    codexTunnels: codexDiscovery?.tunnelOrigins,
+    codexOpenaiBaseUrl: codexDiscovery?.openaiBaseUrl ?? null,
+    codexAuthJson: codexAuthPath(process.env, os.homedir()),
   });
 
   // cannbot 网关 fail-fast：内建 cannbot provider 无上游（未配置
@@ -875,7 +859,7 @@ async function main(): Promise<void> {
   // （body.dsh_session_log），cpx-cli 不必知道具体 agent。
   const sessionProxy = await startSessionProxy(sid, upstreams);
   const jsonlPath = sessionFilePath(sid);
-  const { env, args } = buildLaunch(profile, sessionProxy.port, upstreams.claude, agentArgs, agentCmd);
+  const { env, args } = buildLaunch(profile, sessionProxy.port, upstreams.claude, agentArgs, agentCmd, codexDiscovery);
 
   // Ensure the per-session proxy dies with cpx-cli, even on signals. Kill the
   // whole process GROUP (npx → tsx → node server.ts + esbuild grandchild):
@@ -955,6 +939,18 @@ async function main(): Promise<void> {
     log(`  2.x isolation: ${args.includes('--standalone')
       ? '--standalone 已注入（私有服务，OPENCODE_CONFIG_CONTENT 对发调进程生效）'
       : '未注入（未检测到该 flag / 子命令不支持——若为 2.x 共享服务形态，捕获可能为空）'}`);
+  }
+  if (profile === 'codex' && codexDiscovery) {
+    // 作用域与分层可见性（排障 #156 类问题的第一线索）：
+    //   config 根 / 隧道表 / argv 层改道条目 / 活跃 provider 声明
+    const configIds = codexDiscovery.table ? Object.keys(codexDiscovery.table.providers) : [];
+    log(`  codex config: ${codexDiscovery.table ? `${configIds.length} provider tunnel(s)` : 'no custom [model_providers]'}  (CODEX_HOME-aware)`);
+    if (codexDiscovery.argvTunnelIds.length > 0) {
+      log(`  codex argv -c providers (rewritten to tunnel): ${codexDiscovery.argvTunnelIds.join(', ')}`);
+    }
+    if (codexDiscovery.modelProvider) {
+      log(`  codex active provider (argv): ${codexDiscovery.modelProvider}  (选择原样保留，cpx 不改动)`);
+    }
   }
   log(`proxy: http://127.0.0.1:${sessionProxy.port}  (per-session, sid pinned via env)`);
   // claude 会话的捕获文件按 claude 自己的 session id（请求头）命名 —— 与

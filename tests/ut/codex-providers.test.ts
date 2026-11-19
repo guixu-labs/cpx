@@ -14,7 +14,7 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { readCodexProviderTable, tunnelBaseUrl, providerUpstreamOrigins } from '../../src/cli/codex-providers.ts';
+import { readCodexProviderTable, tunnelBaseUrl, providerUpstreamOrigins, codexHome, codexConfigPath, codexAuthPath } from '../../src/cli/codex-providers.ts';
 import { loopbackNoProxy } from '../../src/cli/child-env.ts';
 
 function withConfig(toml: string): string {
@@ -43,7 +43,27 @@ wire_api = "responses"
     expect(table.providers['volcano']).toEqual({
       baseUrl: 'https://gw-example.apigateway-cn-beijing.example.com/v1',
       wireApi: 'responses',
+      name: 'Volcano Gateway',
+      envKey: 'VOLCANO_API_KEY',
+      requiresOpenaiAuth: null,
     });
+  });
+
+  it('requires_openai_auth 裸布尔收齐（注入自足的鉴权字段全集）', () => {
+    const file = withConfig(`
+[model_providers.chatgpt-relay]
+name = "Relay"
+base_url = "https://relay.example.com/v1"
+requires_openai_auth = true
+
+[model_providers.api-relay]
+name = "Api"
+base_url = "https://api-relay.example.com/v1"
+requires_openai_auth = false
+`);
+    const table = readCodexProviderTable(file)!;
+    expect(table.providers['chatgpt-relay'].requiresOpenaiAuth).toBe(true);
+    expect(table.providers['api-relay'].requiresOpenaiAuth).toBe(false);
   });
 
   it('顶层 openai_base_url 捕获（responses 协议真实上游依据）；节内同名键不串位', () => {
@@ -130,6 +150,9 @@ base_url = "https://evil-wrong-host.example.com/v1"
     expect(table.providers['a']).toEqual({
       baseUrl: 'https://a.example.com/v1',
       wireApi: null,
+      name: null,
+      envKey: null,
+      requiresOpenaiAuth: null,
     });
   });
 
@@ -155,6 +178,9 @@ wire_api = 'chat'
     expect(table.providers['a']).toEqual({
       baseUrl: 'https://a.example.com/v1',
       wireApi: 'chat',
+      name: null,
+      envKey: null,
+      requiresOpenaiAuth: null,
     });
   });
 
@@ -192,6 +218,27 @@ model = "x"
   });
 });
 
+describe('codex 作用域单点（CODEX_HOME 同构，issue #156 根修）', () => {
+  const home = '/home/tester';
+
+  it('CODEX_HOME 未设 → ~/.codex（fallback 与 codex 自身解析一致）', () => {
+    expect(codexHome({}, home)).toBe('/home/tester/.codex');
+    expect(codexConfigPath({}, home)).toBe('/home/tester/.codex/config.toml');
+    expect(codexAuthPath({}, home)).toBe('/home/tester/.codex/auth.json');
+  });
+
+  it('CODEX_HOME 设置（harness 隔离场景）→ 三个路径全部跟随重定位', () => {
+    expect(codexHome({ CODEX_HOME: '/opt/sandbox/codex' }, home)).toBe('/opt/sandbox/codex');
+    expect(codexConfigPath({ CODEX_HOME: '/opt/sandbox/codex' }, home)).toBe('/opt/sandbox/codex/config.toml');
+    expect(codexAuthPath({ CODEX_HOME: '/opt/sandbox/codex' }, home)).toBe('/opt/sandbox/codex/auth.json');
+  });
+
+  it('CODEX_HOME 空串/纯空白视为未设（空串不产生空上游类路径）', () => {
+    expect(codexHome({ CODEX_HOME: '' }, home)).toBe('/home/tester/.codex');
+    expect(codexHome({ CODEX_HOME: '   ' }, home)).toBe('/home/tester/.codex');
+  });
+});
+
 describe('tunnelBaseUrl：路径保真隧道', () => {
   it('保留原 base_url 的 path 部分（/v1 网关 → /<id>/v1）', () => {
     expect(tunnelBaseUrl('http://127.0.0.1:PORT', 'volcano', 'https://host.example.com/v1'))
@@ -216,9 +263,9 @@ describe('providerUpstreamOrigins：origin-only upstream 表', () => {
     const table = {
       openaiBaseUrl: null,
       providers: {
-        volcano: { baseUrl: 'https://gw.example.com/v1', wireApi: 'responses' },
-        other: { baseUrl: 'http://h2.example.com:8080/base', wireApi: null },
-        bad: { baseUrl: '::not-a-url::', wireApi: null },
+        volcano: { baseUrl: 'https://gw.example.com/v1', wireApi: 'responses', name: null, envKey: null, requiresOpenaiAuth: null },
+        other: { baseUrl: 'http://h2.example.com:8080/base', wireApi: null, name: null, envKey: null, requiresOpenaiAuth: null },
+        bad: { baseUrl: '::not-a-url::', wireApi: null, name: null, envKey: null, requiresOpenaiAuth: null },
       },
     };
     expect(providerUpstreamOrigins(table)).toEqual({
