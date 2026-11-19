@@ -1081,7 +1081,9 @@ async function main(): Promise<void> {
     if (!importLive) continue;
     log(`  importing: ${importPath}`);
     const result = await triggerIngest(captureSid, importPath);
-    if (result) lastUrl = `${INSIGHT_BASE}/session/${captureSid}`;
+    // Insight 0.2.x 详情页路由是 /run/solo:<taskId>(旧 /session/<taskId> 已 404);
+    // cpx 与 context-insight 的路由契约,随 insight 版本演进同步维护。
+    if (result) lastUrl = `${INSIGHT_BASE}/run/solo:${captureSid}`;
     else log('  ingest failed; you can import manually via the context-insight UI');
   }
   if (lastUrl) {
