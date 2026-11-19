@@ -11,19 +11,25 @@
 // 契约：捕获代理必须把流量转发到「子进程 agent 在无 cpx 时真正会用的
 // 上游」，否则捕获到的请求发向了与真实运行不同的目标（客户案：进程 env
 // 的 ANTHROPIC_BASE_URL 被无视 → 回退官方地址 → 代理转发到错误上游）。
-// 因此每族的解析链与该 agent 自身配置源的优先级同构：
-//
-// - claude（真机实测 claude 2.1.278 三向冲突实验，非文档推测）：
+// 因此每族的解析链与该 agent 自身配置源的优先级同构，且**作用域同构**——
+// agent 的配置宇宙可被 env 重定位（CODEX_HOME / CLAUDE_CONFIG_DIR，harness
+// 隔离场景的标配），cpx 必须在子进程的作用域里解析，而非操作员 home：
+//   - claude：user 层 settings 锚定 claudeConfigDir（$CLAUDE_CONFIG_DIR →
+//     ~/.claude；实测 2.1.278 凭据随目录迁移）
+//   - codex：auth.json 检测锚定 codexAuthPath（$CODEX_HOME → ~/.codex）
+// 链内优先级（非文档推测）：
+// - claude（真机实测 claude 2.1.278 三向冲突实验）：
 //     .claude/settings.local.json > .claude/settings.json(project)
-//     > ~/.claude/settings.json(user) > 进程 env > 官方默认
-//   （settings 的 env 段覆盖同名 shell 变量——进程 env 是最低层）
+//     > user settings.json > 进程 env > 官方默认
+//     （settings 的 env 段覆盖同名 shell 变量——进程 env 是最低层）
 // - dsh：CONTEXT 旋钮 > 进程 env DEEPSEEK_BASE_URL > 官方默认。
 //   cordis.patch.yml 显式 baseURL 优先于 env 但路径不可知，不镜像
 //   （运行时已有警告，属已知限制）
 // - openai/generic（opencode 未发现 provider 时同链兜底）：
 //     旋钮 > 进程 env OPENAI_BASE_URL > 官方默认
-// - codex responses：旋钮 > config.toml 顶层 openai_base_url
-//     > chatgpt auth.json 检测 > 官方默认。
+// - codex responses：旋钮 > openai_base_url 有效值（argv -c 层 ??
+//     config.toml 顶层，调用方归并后注入）> chatgpt auth.json 检测
+//     > 官方默认。
 //   codex 不读 OPENAI_BASE_URL env（二进制探针：仅 network-proxy 凭据
 //   擦除列表出现，不作端点解析）→ 链中无 env 层；采纳 openai_base_url
 //   时剥尾部 /v1（codex 向 base 追加 /responses，proxy 侧请求路径已含
@@ -70,16 +76,22 @@ export interface ProxyUpstreams {
 export interface ResolveUpstreamsOpts {
   /** 进程 env（默认 process.env；测试注入） */
   processEnv?: NodeJS.ProcessEnv;
-  /** 用户主目录（默认 os.homedir()；控制 ~/.claude、~/.codex） */
+  /** 用户主目录（默认 os.homedir()；控制 ~/.claude、~/.codex fallback） */
   homeDir?: string;
   /** 项目目录（默认 process.cwd()；控制 .claude/settings*.json 两层） */
   projectDir?: string;
   /** opencode/cannbot 已发现的 per-provider 上游表（cpx-cli 机械层产物） */
   opencodeUpstreams?: Record<string, string>;
-  /** codex config.toml 已解析的隧道表（cpx-cli 机械层产物） */
+  /** codex 已发现的 per-provider 隧道 origin 表（config 层 ∪ argv -c 层） */
   codexTunnels?: Record<string, string>;
-  /** codex config.toml 顶层 openai_base_url（null=未设） */
+  /** codex openai_base_url 有效值（argv -c 层 ?? config.toml 顶层；null=未设） */
   codexOpenaiBaseUrl?: string | null;
+  /** codex openai_base_url 有效值来源（argv -c 层 / config.toml 顶层；启动
+   *  日志 source 标注用，不参与解析优先级） */
+  codexOpenaiBaseUrlSource?: 'argv' | 'config';
+  /** codex auth.json 路径（CODEX_HOME-aware，codexAuthPath 产物；chatgpt
+   *  登录检测作用域与子进程同宇宙——issue #156 同类作用域失配的收口） */
+  codexAuthJson?: string;
 }
 
 const CLAUDE_OFFICIAL = 'https://api.anthropic.com';
@@ -102,15 +114,26 @@ function readSettingsEnv(file: string): Record<string, string> {
   }
 }
 
+/** claude 配置目录单点（作用域同构）：$CLAUDE_CONFIG_DIR（env 重定位，
+ *  harness 隔离场景）→ ~/.claude。实测 claude 2.1.278：CLAUDE_CONFIG_DIR
+ *  指向空目录时凭据/配置随之迁移（"Not logged in"）——settings 的 user 层
+ *  与原生转录路径都锚定在这里。cpx-cli 的 claudeNativeLogPath 同源引用。 */
+export function claudeConfigDir(env: NodeJS.ProcessEnv, homeDir: string): string {
+  const v = env.CLAUDE_CONFIG_DIR?.trim();
+  return v ? v : path.join(homeDir, '.claude');
+}
+
 /** claude 配置层（真机实测优先级：proj-local > proj > user；cpx 注入的
- *  --settings 是最高层，由 buildLaunch 全量覆写保证，不在本表） */
+ *  --settings 是最高层，由 buildLaunch 全量覆写保证，不在本表）。
+ *  user 层锚定 claudeConfigDir（CLAUDE_CONFIG_DIR 感知——harness 隔离时
+ *  cpx 必须读 harness 侧的 user settings，而非操作员 home 的）。 */
 interface ClaudeTier { source: string; env: Record<string, string> }
 
-function claudeTiers(homeDir: string, projectDir: string): ClaudeTier[] {
+function claudeTiers(env: NodeJS.ProcessEnv, homeDir: string, projectDir: string): ClaudeTier[] {
   return [
     { source: '.claude/settings.local.json env (project)', env: readSettingsEnv(path.join(projectDir, '.claude', 'settings.local.json')) },
     { source: '.claude/settings.json env (project)', env: readSettingsEnv(path.join(projectDir, '.claude', 'settings.json')) },
-    { source: '~/.claude/settings.json env', env: readSettingsEnv(path.join(homeDir, '.claude', 'settings.json')) },
+    { source: 'user settings.json env', env: readSettingsEnv(path.join(claudeConfigDir(env, homeDir), 'settings.json')) },
   ];
 }
 
@@ -149,21 +172,32 @@ function resolveOpenaiUpstream(env: NodeJS.ProcessEnv): UpstreamResolution {
   return { upstream: OPENAI_OFFICIAL, source: 'default (api.openai.com)' };
 }
 
-function resolveResponsesUpstream(env: NodeJS.ProcessEnv, homeDir: string, codexOpenaiBaseUrl: string | null): UpstreamResolution {
+function resolveResponsesUpstream(
+  env: NodeJS.ProcessEnv,
+  codexAuthJson: string,
+  codexOpenaiBaseUrl: string | null,
+  codexOpenaiBaseUrlSource: 'argv' | 'config' | undefined,
+): UpstreamResolution {
   const knob = pickEnv(env, 'CONTEXT_PROXY_RESPONSES_UPSTREAM');
   if (knob) return { upstream: knob, source: 'CONTEXT_PROXY_RESPONSES_UPSTREAM override' };
   const cfg = codexOpenaiBaseUrl?.trim() || null;
   if (cfg) {
-    // config.toml 采纳的上游 verbatim（只剥尾斜杠）：codex 向 base 追加
+    // codex 配置采纳的上游 verbatim（只剥尾斜杠）：codex 向 base 追加
     // /responses，cpx 注入 base_url=<proxy>/v1 使请求路径为 /v1/responses，
     // 转发时（server.ts）剥路径前缀 /v1 → 还原 codex 直连 base + /responses
     // 的字节形态——base 不以 /v1 结尾（网关路径）时同样成立；整条 base 结尾
     // 各异的 /v1 剥法只对 /v1 结尾的 base 对，会把网关路径拼出多余 /v1。
-    return { upstream: cfg.replace(/\/+$/, ''), source: 'config.toml openai_base_url' };
+    // source 按实际来源区分：-c 声明的值误标 config.toml 会误导排障。
+    return {
+      upstream: cfg.replace(/\/+$/, ''),
+      source: codexOpenaiBaseUrlSource === 'argv' ? 'argv -c openai_base_url' : 'config.toml openai_base_url',
+    };
   }
   // chatgpt 登录用户：codex 走 chatgpt 后端而非 API key 端点（auth.json
-  // 存在且未设 OPENAI_API_KEY 即视为该形态）
-  if (!pickEnv(env, 'OPENAI_API_KEY') && fs.existsSync(path.join(homeDir, '.codex', 'auth.json'))) {
+  // 存在且未设 OPENAI_API_KEY 即视为该形态）。auth.json 作用域与 config
+  // 同源（CODEX_HOME-aware，codexAuthPath 由调用方注入——cpx 与子进程
+  // 看同一个宇宙）。
+  if (!pickEnv(env, 'OPENAI_API_KEY') && fs.existsSync(codexAuthJson)) {
     return { upstream: 'https://chatgpt.com/backend-api/codex', source: 'chatgpt auth.json' };
   }
   // 内置 openai 端点默认带 /v1 后缀（codex 向 base 追加 /responses）——
@@ -176,7 +210,7 @@ export function resolveProxyUpstreams(profile: AgentProfile, opts: ResolveUpstre
   const homeDir = opts.homeDir ?? os.homedir();
   const projectDir = opts.projectDir ?? process.cwd();
 
-  const tiers = claudeTiers(homeDir, projectDir);
+  const tiers = claudeTiers(env, homeDir, projectDir);
   const anthropic = profile === 'dsh' ? resolveDshUpstream(env) : resolveClaudeUpstream(env, tiers);
 
   // apiKey/model 与 upstream 同链同层序（settings env 覆盖同名 shell 变量）
@@ -186,7 +220,12 @@ export function resolveProxyUpstreams(profile: AgentProfile, opts: ResolveUpstre
   return {
     anthropic,
     openai: resolveOpenaiUpstream(env),
-    responses: resolveResponsesUpstream(env, homeDir, opts.codexOpenaiBaseUrl ?? null),
+    responses: resolveResponsesUpstream(
+      env,
+      opts.codexAuthJson ?? path.join(homeDir, '.codex', 'auth.json'),
+      opts.codexOpenaiBaseUrl ?? null,
+      opts.codexOpenaiBaseUrlSource,
+    ),
     providerUpstreams:
       profile === 'opencode' || profile === 'cannbot' ? (opts.opencodeUpstreams ?? {})
       : profile === 'codex' ? (opts.codexTunnels ?? {})

@@ -64,6 +64,13 @@ const AGENT_DISCOVERY_ENV_KEYS = [
   'OPENAI_BASE_URL', 'OPENAI_API_KEY', 'DEEPSEEK_BASE_URL',
 ] as const;
 
+/** agent 配置作用域变量（配置宇宙重定位——cpx 发现层的读取面）：与端点
+ *  发现变量同类，默认剥除保确定性；作用域用例（CODEX_HOME / CLAUDE_CONFIG_DIR
+ *  重定位）经 env overrides 显式注入。 */
+const AGENT_SCOPE_ENV_KEYS = [
+  'CODEX_HOME', 'CLAUDE_CONFIG_DIR',
+] as const;
+
 export function createSandbox(prefix: string): Sandbox {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
   const captures = path.join(root, 'captures');
@@ -84,6 +91,7 @@ export function createSandbox(prefix: string): Sandbox {
       if (k.startsWith('CONTEXT_PROXY_')) continue;
       if (k === ENV.INSIGHT_BASE) continue;
       if (AGENT_DISCOVERY_ENV_KEYS.includes(k as (typeof AGENT_DISCOVERY_ENV_KEYS)[number])) continue;
+      if (AGENT_SCOPE_ENV_KEYS.includes(k as (typeof AGENT_SCOPE_ENV_KEYS)[number])) continue;
       child[k] = v;
     }
     child[ENV.PROXY_DIR] = captures;

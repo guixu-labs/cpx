@@ -29,7 +29,8 @@
 // 0.162 `codex --help` 的 Options 段。未来新增未知带值 flag 时，仅「值恰
 // 好逐字等于子命令名」的病态场景才会误判（正常值如 deepseek /
 // workspace-write 均被「非集合裸词继续扫描」规则兜住）。
-const CODEX_VALUE_FLAGS: ReadonlySet<string> = new Set([
+// codex-overrides 的 argv 扫描同源引用（单一词表）。
+export const CODEX_VALUE_FLAGS: ReadonlySet<string> = new Set([
   '-c', '--config',
   '--enable', '--disable',
   '--remote', '--remote-auth-token-env',
@@ -76,6 +77,27 @@ export function parseCodexSubcommands(help: string | null): ReadonlySet<string> 
   return names.size > 0 ? names : null;
 }
 
+// 子命令 token 定位（withCodexTunnel 注入与 codex-overrides 的 argv 分层
+// 共用）：返回第一个子命令 token 的下标；无子命令 / 探测失败返回 -1。
+// 带值 flag（CODEX_VALUE_FLAGS）的独立值 token 被跳过；`--` 之后的 token
+// 是 prompt 文本（codex 不再按 flag 解析——0.169 实测 F3），一并停扫。
+export function findCodexSubcommandIndex(
+  agentArgs: readonly string[],
+  subcommands: ReadonlySet<string> | null,
+): number {
+  if (subcommands === null) return -1;
+  for (let i = 0; i < agentArgs.length; i++) {
+    if (agentArgs[i] === '--') return -1;
+    const t = agentArgs[i];
+    if (t.startsWith('-')) {
+      if (CODEX_VALUE_FLAGS.has(t)) i += 1; // 跳过带值 flag 的独立值 token
+      continue;
+    }
+    if (subcommands.has(t)) return i; // 非集合裸词（TUI prompt）→ 继续扫
+  }
+  return -1;
+}
+
 // 隧道 -c 的注入定位。返回完整 agent 启动参数（含隧道）：
 //   无子命令（TUI / 探测失败 fail-safe）→ 全局位（最前）
 //   有子命令 → 子命令 token 之后（与用户自己的子命令位 -c 同层共存，
@@ -87,15 +109,7 @@ export function withCodexTunnel(
 ): string[] {
   const tunnel = [...overrideArgs];
   if (tunnel.length === 0) return [...agentArgs];
-  if (subcommands === null) return [...tunnel, ...agentArgs];
-  for (let i = 0; i < agentArgs.length; i++) {
-    const t = agentArgs[i];
-    if (t.startsWith('-')) {
-      if (CODEX_VALUE_FLAGS.has(t)) i += 1; // 跳过带值 flag 的独立值 token
-      continue;
-    }
-    if (!subcommands.has(t)) continue; // 非集合裸词（TUI prompt / 未知 flag 的值）→ 继续扫
-    return [...agentArgs.slice(0, i + 1), ...tunnel, ...agentArgs.slice(i + 1)];
-  }
-  return [...tunnel, ...agentArgs];
+  const subIdx = findCodexSubcommandIndex(agentArgs, subcommands);
+  if (subIdx < 0) return [...tunnel, ...agentArgs];
+  return [...agentArgs.slice(0, subIdx + 1), ...tunnel, ...agentArgs.slice(subIdx + 1)];
 }

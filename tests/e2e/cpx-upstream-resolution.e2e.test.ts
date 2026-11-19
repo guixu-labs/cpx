@@ -42,6 +42,7 @@ let AGENT: string;
 const UPSTREAM_NAMES = [
   'ENV', 'USER', 'PROJ', 'PROJLOCAL', 'KNOB',
   'OPENAI_ENV', 'OPENAI_KNOB', 'CODEX_CFG', 'RESP_KNOB', 'DSH', 'DSH_KNOB',
+  'CODEX_XHOME', 'CLAUDE_CFGDIR', 'CODEX_ARGV',
 ] as const;
 type UpstreamName = (typeof UPSTREAM_NAMES)[number];
 const ports: Record<UpstreamName, number> = {} as Record<UpstreamName, number>;
@@ -154,8 +155,9 @@ async function runCpx(profile: 'claude' | 'openai' | 'codex' | 'dsh', extra: {
   cwd?: string;
   call?: boolean;
   dump?: string;
+  agentArgs?: string[];
 } = {}): Promise<{ status: number; stderr: string }> {
-  const r = await harnessRunCpx(sandbox, ['--agent', profile, '--', AGENT], {
+  const r = await harnessRunCpx(sandbox, ['--agent', profile, '--', AGENT, ...(extra.agentArgs ?? [])], {
     cwd: extra.cwd ?? sandbox.root,
     env: {
       CPX_TEST_AGENT_MODE: profile,
@@ -210,7 +212,7 @@ describe('cpx 上游解析：镜像契约（各族解析链 = agent 自身配置
     expect(r.status).toBe(0);
     assertHit(run, 'USER');
     assertNoHit(run, 'ENV');
-    expect(r.stderr).toContain(`upstream: ${url('USER')}  (source: ~/.claude/settings.json env)`);
+    expect(r.stderr).toContain(`upstream: ${url('USER')}  (source: user settings.json env)`);
   }, 180_000);
 
   it('③ claude：project settings 优先于 user settings（真机 E3 语义）', async () => {
@@ -326,6 +328,22 @@ describe('cpx 上游解析：镜像契约（各族解析链 = agent 自身配置
     expect(r.stderr).toContain(`upstream: ${url('CODEX_CFG')}/openai  (source: config.toml openai_base_url)`);
   }, 180_000);
 
+  it('⑩c codex：argv -c openai_base_url 声明 → 转发 argv 值 + source 标 argv（不再误报 config.toml）', async () => {
+    // 无 config.toml：argv 是 openai_base_url 唯一来源（修复前 source 硬编码
+    // config.toml，-c 声明的值被误标成 config 来源，排障误导）
+    resetCodexHome();
+    const before = hits.length;
+    const r = await runCpx('codex', {
+      call: true,
+      agentArgs: ['-c', `openai_base_url="${url('CODEX_ARGV')}/v1"`],
+    });
+    const run = hits.slice(before);
+    expect(r.status).toBe(0);
+    assertHit(run, 'CODEX_ARGV');
+    expect(run.find(h => h.name === 'CODEX_ARGV')?.url).toBe('/v1/responses');
+    expect(r.stderr).toContain(`upstream: ${url('CODEX_ARGV')}/v1  (source: argv -c openai_base_url)`);
+  }, 180_000);
+
   it('⑪ codex：CONTEXT_PROXY_RESPONSES_UPSTREAM 旋钮不被 chatgpt auth 检测覆写（旋钮真最高层）', async () => {
     resetCodexHome({ authJson: true });
     const before = hits.length;
@@ -361,5 +379,43 @@ describe('cpx 上游解析：镜像契约（各族解析链 = agent 自身配置
     expect(r.status).toBe(0);
     assertHit(run, 'DSH_KNOB');
     assertNoHit(run, 'DSH');
+  }, 180_000);
+
+  // —— 作用域同构（config-scope parity，issue #156 同类问题的读侧收口）——
+  // harness 隔离场景：agent 的配置宇宙被 env 重定位（CODEX_HOME /
+  // CLAUDE_CONFIG_DIR），cpx 必须在子进程的宇宙里解析，而非操作员 home——
+  // 修复前宿主 home 的同键设置会劫持解析链 → 代理转发到错误上游（镜像
+  // 契约破坏）。
+
+  it('⑭ codex：CODEX_HOME 重定位（harness 隔离）→ config.toml 从隔离宇宙读取，宿主 ~/.codex 同键不劫持', async () => {
+    // 宿主 home 放「错误」的 openai_base_url（修复前的读取面）
+    resetCodexHome({ configToml: `openai_base_url = "${url('CODEX_CFG')}/v1"\n` });
+    // 隔离 CODEX_HOME：harness 的真实宇宙
+    const xhome = path.join(sandbox.root, 'codex-xhome');
+    fs.mkdirSync(xhome, { recursive: true });
+    fs.writeFileSync(path.join(xhome, 'config.toml'), `openai_base_url = "${url('CODEX_XHOME')}/v1"\n`);
+    const before = hits.length;
+    const r = await runCpx('codex', { call: true, env: { CODEX_HOME: xhome } });
+    const run = hits.slice(before);
+    expect(r.status).toBe(0);
+    assertHit(run, 'CODEX_XHOME');
+    assertNoHit(run, 'CODEX_CFG'); // 宿主 home 的同键不参与解析（作用域同构）
+    expect(r.stderr).toContain(`upstream: ${url('CODEX_XHOME')}/v1  (source: config.toml openai_base_url)`);
+  }, 180_000);
+
+  it('⑮ claude：CLAUDE_CONFIG_DIR 重定位（harness 隔离）→ user settings 从重定位目录读取，宿主 ~/.claude 同键不劫持', async () => {
+    // 宿主 home 的 user settings 放「错误」上游（修复前的读取面）
+    writeClaudeSettings(HOME, { ANTHROPIC_BASE_URL: url('USER') });
+    // 重定位目录的 user settings（harness 的真实宇宙）
+    const cfgdir = path.join(sandbox.root, 'claude-cfgdir');
+    fs.mkdirSync(cfgdir, { recursive: true });
+    fs.writeFileSync(path.join(cfgdir, 'settings.json'),
+      JSON.stringify({ env: { ANTHROPIC_BASE_URL: url('CLAUDE_CFGDIR') } }));
+    const before = hits.length;
+    const r = await runCpx('claude', { call: true, env: { CLAUDE_CONFIG_DIR: cfgdir } });
+    const run = hits.slice(before);
+    expect(r.status).toBe(0);
+    assertHit(run, 'CLAUDE_CFGDIR');
+    assertNoHit(run, 'USER'); // 宿主 home 的 user settings 不参与解析
   }, 180_000);
 });

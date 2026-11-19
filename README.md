@@ -92,12 +92,15 @@ cpx --agent openai -- <cmd>     # 显式指定 profile
 
 **codex 的网络场景全覆盖**（`cpx codex` 自动适配，无需配置）：
 
+配置发现与 codex 自身**作用域同构**（issue #156 根修）：`CODEX_HOME`（env 重定位，harness 隔离场景的标配）下的 config.toml / auth.json 才是子进程的真实配置宇宙，cpx 不再读操作员 home；harness 靠 `-c` 注入的 provider（宿主 config 里没有）也纳入发现并改道捕获。
+
 | 场景 | 机制 |
 |---|---|
 | 全局/窗口级梯子（HTTP(S)_PROXY） | proxy 出口遵循环境代理；agent→proxy 本地跳恒直连（自动注入 NO_PROXY） |
 | TUN 模式梯子 / 无代理直连 | 透明路由 / 直连回退 |
-| 自定义 provider（`~/.codex/config.toml` 的 `[model_providers.*]`，如 volcano/deepseek 网关） | 路径保真隧道：所有 provider 的 base_url 重定向到本地 proxy，转发与直连字节级同构 |
-| 用户自带 `-c`（如 `-c sandbox_mode="workspace-write"`） | 隧道 `-c` 自动注入**子命令位**（exec/resume/… token 后，别名 `e`/`a` 亦识别）：codex 0.162 起子命令位一旦出现任何 `-c`，全局位的 `-c` 整组被丢弃——同层共存才能保住隧道（TUI 无子命令不受影响） |
+| 自定义 provider（config.toml 的 `[model_providers.*]`，如 volcano/deepseek 网关） | 路径保真隧道：所有 provider 的 base_url 重定向到本地 proxy，转发与直连字节级同构；注入**全字段自足**（name/env_key/wire_api/requires_openai_auth 尽收尽回放），即使子进程 config 无同名条目也独立通过 codex 0.169+ 的加载校验（不再产出 base_url-only 残缺条目） |
+| harness 以 `-c` 注入 provider（`model_providers.<id>.*`，含 `--config=` 连写形态） | 发现层解析 argv 覆盖（子命令位胜全局位、同位后者胜）→ provider 的 base_url token **就地改写**为隧道（位置与 flag 形态原样保留，不赌 codex 的 `-c` 优先级）；活跃 provider 选择（`model_provider=`）原样保留，cpx 从不改动 |
+| 用户自带 `-c`（如 `-c sandbox_mode="workspace-write"`） | 隧道 `-c` 自动注入**子命令位**（exec/resume/… token 后，别名 `e`/`a` 亦识别）：codex 0.162 起子命令位一旦出现任何 `-c`，全局位的 `-c` 整组被丢弃——同层共存才能保住隧道（TUI 无子命令不受影响；0.169 已实测不再丢弃，注入位保持对旧版兼容） |
 | 多子代理会话（spawn_agent） | 每线程独立捕获文件 + 泳道元数据（nickname/agentId 自动关联） |
 
 **第三步：实时观察捕获（可选）**
