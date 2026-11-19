@@ -42,7 +42,7 @@ let AGENT: string;
 const UPSTREAM_NAMES = [
   'ENV', 'USER', 'PROJ', 'PROJLOCAL', 'KNOB',
   'OPENAI_ENV', 'OPENAI_KNOB', 'CODEX_CFG', 'RESP_KNOB', 'DSH', 'DSH_KNOB',
-  'CODEX_XHOME', 'CLAUDE_CFGDIR',
+  'CODEX_XHOME', 'CLAUDE_CFGDIR', 'CODEX_ARGV',
 ] as const;
 type UpstreamName = (typeof UPSTREAM_NAMES)[number];
 const ports: Record<UpstreamName, number> = {} as Record<UpstreamName, number>;
@@ -155,8 +155,9 @@ async function runCpx(profile: 'claude' | 'openai' | 'codex' | 'dsh', extra: {
   cwd?: string;
   call?: boolean;
   dump?: string;
+  agentArgs?: string[];
 } = {}): Promise<{ status: number; stderr: string }> {
-  const r = await harnessRunCpx(sandbox, ['--agent', profile, '--', AGENT], {
+  const r = await harnessRunCpx(sandbox, ['--agent', profile, '--', AGENT, ...(extra.agentArgs ?? [])], {
     cwd: extra.cwd ?? sandbox.root,
     env: {
       CPX_TEST_AGENT_MODE: profile,
@@ -325,6 +326,22 @@ describe('cpx 上游解析：镜像契约（各族解析链 = agent 自身配置
     // 剥错地方（剥 base 尾部 /v1）会拼成 /openai/v1/responses 多出一段 /v1
     expect(run.find(h => h.name === 'CODEX_CFG')?.url).toBe('/openai/responses');
     expect(r.stderr).toContain(`upstream: ${url('CODEX_CFG')}/openai  (source: config.toml openai_base_url)`);
+  }, 180_000);
+
+  it('⑩c codex：argv -c openai_base_url 声明 → 转发 argv 值 + source 标 argv（不再误报 config.toml）', async () => {
+    // 无 config.toml：argv 是 openai_base_url 唯一来源（修复前 source 硬编码
+    // config.toml，-c 声明的值被误标成 config 来源，排障误导）
+    resetCodexHome();
+    const before = hits.length;
+    const r = await runCpx('codex', {
+      call: true,
+      agentArgs: ['-c', `openai_base_url="${url('CODEX_ARGV')}/v1"`],
+    });
+    const run = hits.slice(before);
+    expect(r.status).toBe(0);
+    assertHit(run, 'CODEX_ARGV');
+    expect(run.find(h => h.name === 'CODEX_ARGV')?.url).toBe('/v1/responses');
+    expect(r.stderr).toContain(`upstream: ${url('CODEX_ARGV')}/v1  (source: argv -c openai_base_url)`);
   }, 180_000);
 
   it('⑪ codex：CONTEXT_PROXY_RESPONSES_UPSTREAM 旋钮不被 chatgpt auth 检测覆写（旋钮真最高层）', async () => {

@@ -223,6 +223,25 @@ base_url = "https://bare.example.com"
       'openai_base_url="http://127.0.0.1:41234/v1"',
     ]);
   });
+
+  it('argv 已声明 base_url 的 id 不再注入 config base_url（name/env_key 等缺失字段照补）', () => {
+    const table = tableOf(`
+[model_providers.gw]
+name = "Config GW"
+base_url = "https://config.example.com/v1"
+env_key = "GW_KEY"
+
+[model_providers.other]
+base_url = "https://other.example.com/v1"
+`)!;
+    expect(buildCodexTunnelOverrides(PROXY, table, new Set(['gw']))).toEqual([
+      'model_providers.gw.name="Config GW"',
+      'model_providers.gw.env_key="GW_KEY"',
+      'model_providers.other.base_url="http://127.0.0.1:41234/other/v1"',
+      'model_providers.other.name="other"',
+      'openai_base_url="http://127.0.0.1:41234/v1"',
+    ]);
+  });
 });
 
 describe('discoverCodexCapture / applyCodexCapture：发现层合并与注入层分支', () => {
@@ -286,7 +305,7 @@ wire_api = "responses"
     expect(args[1]).toBe('-c');
   });
 
-  it('L1 ∪ L2 同 id：argv 层 base_url 是 codex 真正会用的 → upstream 与改道均以 argv 为准', () => {
+  it('L1 ∪ L2 同 id：argv 层 base_url 是唯一权威 → config 不再注入 base_url，仅补 name 等缺失字段', () => {
     const table = tableOf(`
 [model_providers.gw]
 name = "Config GW"
@@ -300,8 +319,46 @@ base_url = "https://config.example.com/v1"
     const discovery = discoverCodexCapture(agentArgs, SUBS, table);
     expect(discovery.tunnelOrigins['gw']).toBe('https://argv.example.com');
     const args = applyCodexCapture({ proxyUrl: PROXY, agentArgs, subcommands: SUBS, discovery, hasOpenaiApiKey: false });
-    // config 层注入 base_url 隧道；argv token 同 key 也改道——两者一致
-    expect(args).toContain('model_providers.gw.base_url="http://127.0.0.1:41234/gw/override/v1"');
+    // 唯一 base_url token = argv 改道（路径保真 /override/v1）；config 的 v1 不得注入
+    expect(args.filter((a) => a.startsWith('model_providers.gw.base_url=')))
+      .toEqual(['model_providers.gw.base_url="http://127.0.0.1:41234/gw/override/v1"']);
+    // 其余字段仍从 config 注入（注入自足语义保持）
+    expect(args).toContain('model_providers.gw.name="Config GW"');
+  });
+
+  it('L1 ∪ L2 同 id + argv base_url 在全局位：config 不产第二份 base_url（否则子命令位胜出、argv path 被丢 404）', () => {
+    const table = tableOf(`
+[model_providers.gw]
+name = "Config GW"
+base_url = "https://config.example.com/v1"
+`)!;
+    const agentArgs = [
+      '-c', 'model_providers.gw.base_url="https://argv.example.com/override/v1"',
+      'exec',
+      '任务',
+    ];
+    const discovery = discoverCodexCapture(agentArgs, SUBS, table);
+    expect(discovery.tunnelOrigins['gw']).toBe('https://argv.example.com');
+    const args = applyCodexCapture({ proxyUrl: PROXY, agentArgs, subcommands: SUBS, discovery, hasOpenaiApiKey: false });
+    // argv token 在全局位：若是注入 config base_url（子命令位），子命令位胜出 →
+    // proxy 按 argv origin + config path 转发，argv 的 /override/v1 被丢 → 404。
+    // 修复后只有 argv 改道这一份 base_url。
+    expect(args.filter((a) => a.startsWith('model_providers.gw.base_url=')))
+      .toEqual(['model_providers.gw.base_url="http://127.0.0.1:41234/gw/override/v1"']);
+  });
+
+  it('openaiBaseUrlSource：argv -c 声明 → argv；仅 config.toml → config；双缺 → null', () => {
+    const configTable = tableOf('openai_base_url = "https://cfg.example.com/v1"\n');
+    const argvOnly = discoverCodexCapture(['exec', '-c', 'openai_base_url="https://argv.example.com/v1"', '任务'], SUBS, tableOf(null));
+    expect(argvOnly.openaiBaseUrlSource).toBe('argv');
+    const configOnly = discoverCodexCapture(['exec', '任务'], SUBS, configTable);
+    expect(configOnly.openaiBaseUrlSource).toBe('config');
+    const neither = discoverCodexCapture(['exec', '任务'], SUBS, tableOf(null));
+    expect(neither.openaiBaseUrlSource).toBeNull();
+    // argv 覆盖 config 时不仅值取 argv，来源也要标 argv
+    const both = discoverCodexCapture(['exec', '-c', 'openai_base_url="https://argv.example.com/v1"', '任务'], SUBS, configTable);
+    expect(both.openaiBaseUrl).toBe('https://argv.example.com/v1');
+    expect(both.openaiBaseUrlSource).toBe('argv');
   });
 
   it('纯 OpenAI 用户（无自定义 provider + OPENAI_API_KEY）→ cpx_proxy 合成条目（自带全字段）', () => {

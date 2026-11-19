@@ -219,11 +219,21 @@ export function rewriteCodexArgvTunnels(
 /** config 层隧道的 -c 注入串构造（注入自足原则）。
  *  每个 provider 回放全部已解析字段（name 必带——codex 0.169+ 加载校验
  *  非空，缺失时 fallback id），末尾补 openai_base_url 兜底——中途切回
- *  内置 openai provider 的流量也能捕获。 */
-export function buildCodexTunnelOverrides(proxyUrl: string, table: CodexProviderTable): string[] {
+ *  内置 openai provider 的流量也能捕获。
+ *  argvTunnelIds（L2 已声明 base_url 的 id）的 base_url 不注入：argv 改道
+ *  是唯一权威（改写优于竞争），若再注入 config base_url，用户 argv token
+ *  在全局位时子命令位的注入会胜出，proxy 却按 argv origin 转发 → 路径失配
+ *  404（见 tunnelOrigins 合并语义）。其余字段照补。 */
+export function buildCodexTunnelOverrides(
+  proxyUrl: string,
+  table: CodexProviderTable,
+  argvTunnelIds: ReadonlySet<string> = new Set(),
+): string[] {
   const out: string[] = [];
   for (const [id, p] of Object.entries(table.providers)) {
-    out.push(`model_providers.${id}.base_url="${tunnelBaseUrl(proxyUrl, id, p.baseUrl)}"`);
+    if (!argvTunnelIds.has(id)) {
+      out.push(`model_providers.${id}.base_url="${tunnelBaseUrl(proxyUrl, id, p.baseUrl)}"`);
+    }
     out.push(`model_providers.${id}.name="${p.name ?? id}"`);
     if (p.envKey != null) out.push(`model_providers.${id}.env_key="${p.envKey}"`);
     if (p.wireApi != null) out.push(`model_providers.${id}.wire_api="${p.wireApi}"`);
@@ -245,6 +255,9 @@ export interface CodexCaptureDiscovery {
   tunnelOrigins: Record<string, string>;
   /** openai_base_url 的有效值（L2 胜 L1；responses 协议真实上游依据） */
   openaiBaseUrl: string | null;
+  /** openai_base_url 有效值的来源（argv -c 层 / config.toml 顶层 / 未设）——
+   *  启动日志 source 标注用，不参与解析优先级 */
+  openaiBaseUrlSource: 'argv' | 'config' | null;
   /** argv 层声明的活跃 provider（日志与排障用；cpx 从不改动） */
   modelProvider: string | null;
   /** L2 可隧道的 provider id（改写目标） */
@@ -276,6 +289,7 @@ export function discoverCodexCapture(
     table: config,
     tunnelOrigins,
     openaiBaseUrl: argv.openaiBaseUrl ?? config?.openaiBaseUrl ?? null,
+    openaiBaseUrlSource: argv.openaiBaseUrl != null ? 'argv' : (config?.openaiBaseUrl != null ? 'config' : null),
     modelProvider: argv.modelProvider,
     argvTunnelIds,
   };
@@ -305,7 +319,7 @@ export function applyCodexCapture(opts: {
   const argvDeclaresProvider = discovery.modelProvider !== null || discovery.argvTunnelIds.length > 0;
   let overrides: string[];
   if (configIds.length > 0) {
-    overrides = buildCodexTunnelOverrides(proxyUrl, discovery.table!);
+    overrides = buildCodexTunnelOverrides(proxyUrl, discovery.table!, new Set(discovery.argvTunnelIds));
   } else if (argvDeclaresProvider) {
     overrides = [`openai_base_url="${proxyUrl}/v1"`];
   } else if (hasOpenaiApiKey) {

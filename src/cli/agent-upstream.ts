@@ -86,6 +86,9 @@ export interface ResolveUpstreamsOpts {
   codexTunnels?: Record<string, string>;
   /** codex openai_base_url 有效值（argv -c 层 ?? config.toml 顶层；null=未设） */
   codexOpenaiBaseUrl?: string | null;
+  /** codex openai_base_url 有效值来源（argv -c 层 / config.toml 顶层；启动
+   *  日志 source 标注用，不参与解析优先级） */
+  codexOpenaiBaseUrlSource?: 'argv' | 'config';
   /** codex auth.json 路径（CODEX_HOME-aware，codexAuthPath 产物；chatgpt
    *  登录检测作用域与子进程同宇宙——issue #156 同类作用域失配的收口） */
   codexAuthJson?: string;
@@ -169,7 +172,12 @@ function resolveOpenaiUpstream(env: NodeJS.ProcessEnv): UpstreamResolution {
   return { upstream: OPENAI_OFFICIAL, source: 'default (api.openai.com)' };
 }
 
-function resolveResponsesUpstream(env: NodeJS.ProcessEnv, codexAuthJson: string, codexOpenaiBaseUrl: string | null): UpstreamResolution {
+function resolveResponsesUpstream(
+  env: NodeJS.ProcessEnv,
+  codexAuthJson: string,
+  codexOpenaiBaseUrl: string | null,
+  codexOpenaiBaseUrlSource: 'argv' | 'config' | undefined,
+): UpstreamResolution {
   const knob = pickEnv(env, 'CONTEXT_PROXY_RESPONSES_UPSTREAM');
   if (knob) return { upstream: knob, source: 'CONTEXT_PROXY_RESPONSES_UPSTREAM override' };
   const cfg = codexOpenaiBaseUrl?.trim() || null;
@@ -179,7 +187,11 @@ function resolveResponsesUpstream(env: NodeJS.ProcessEnv, codexAuthJson: string,
     // 转发时（server.ts）剥路径前缀 /v1 → 还原 codex 直连 base + /responses
     // 的字节形态——base 不以 /v1 结尾（网关路径）时同样成立；整条 base 结尾
     // 各异的 /v1 剥法只对 /v1 结尾的 base 对，会把网关路径拼出多余 /v1。
-    return { upstream: cfg.replace(/\/+$/, ''), source: 'config.toml openai_base_url' };
+    // source 按实际来源区分：-c 声明的值误标 config.toml 会误导排障。
+    return {
+      upstream: cfg.replace(/\/+$/, ''),
+      source: codexOpenaiBaseUrlSource === 'argv' ? 'argv -c openai_base_url' : 'config.toml openai_base_url',
+    };
   }
   // chatgpt 登录用户：codex 走 chatgpt 后端而非 API key 端点（auth.json
   // 存在且未设 OPENAI_API_KEY 即视为该形态）。auth.json 作用域与 config
@@ -208,7 +220,12 @@ export function resolveProxyUpstreams(profile: AgentProfile, opts: ResolveUpstre
   return {
     anthropic,
     openai: resolveOpenaiUpstream(env),
-    responses: resolveResponsesUpstream(env, opts.codexAuthJson ?? path.join(homeDir, '.codex', 'auth.json'), opts.codexOpenaiBaseUrl ?? null),
+    responses: resolveResponsesUpstream(
+      env,
+      opts.codexAuthJson ?? path.join(homeDir, '.codex', 'auth.json'),
+      opts.codexOpenaiBaseUrl ?? null,
+      opts.codexOpenaiBaseUrlSource,
+    ),
     providerUpstreams:
       profile === 'opencode' || profile === 'cannbot' ? (opts.opencodeUpstreams ?? {})
       : profile === 'codex' ? (opts.codexTunnels ?? {})

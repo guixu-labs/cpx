@@ -828,6 +828,7 @@ async function main(): Promise<void> {
       : undefined,
     codexTunnels: codexDiscovery?.tunnelOrigins,
     codexOpenaiBaseUrl: codexDiscovery?.openaiBaseUrl ?? null,
+    codexOpenaiBaseUrlSource: codexDiscovery?.openaiBaseUrlSource ?? undefined,
     codexAuthJson: codexAuthPath(process.env, os.homedir()),
   });
 
