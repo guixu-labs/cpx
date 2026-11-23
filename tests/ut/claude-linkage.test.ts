@@ -199,4 +199,67 @@ describe('claude-linkage：跨进程自愈', () => {
     emit(subRec()); // resume：重放从 .7z 读派发行
     expect(metaOf(subIdOf(TASK)).toolUseId).toBe('toolu_heal_1');
   });
+
+  // ── 派发工具名归一：别名只对 dsh 生效（claude 同名工具不改名）────────
+  // 回归锁：claude 会话若有一个叫 subagent 的自定义/MCP 工具（input 带
+  // string 型 prompt），无条件别名会把它误登记为 Agent 派发，真实子代理的
+  // meta 被错误回填。live 观察按 dshHeader 决定是否别名，盘上重放精确匹配
+  // 'Agent'（dsh 落盘前已改写）——两条路径同一语义。
+  function claudeToolRec(name: string, id: string, prompt: string) {
+    return {
+      sid: SID,
+      receivedAt: Date.now(),
+      completedAt: Date.now(),
+      request: { body: { system: [{ type: 'text', text: 'main system' }], tools: [{ name }], messages: [{ role: 'user', content: 'go' }] } },
+      response: {
+        status: 200, model: 'glm-5.2', stop_reason: null,
+        content: [{ type: 'tool_use', id, name, input: { description: '自定义工具', subagent_type: 'mcp', prompt } }],
+        usage: { input_tokens: 1, output_tokens: 1 },
+      },
+    };
+  }
+  function dshDispatchRec(prompt: string, id: string) {
+    return {
+      sid: SID,
+      receivedAt: Date.now(),
+      completedAt: Date.now(),
+      request: { body: { dsh_session_log: { session: { id: SID, origin: 'main', delegationDepth: 0 } }, system: [{ type: 'text', text: 'dsh main' }], tools: [{ name: 'subagent' }], messages: [{ role: 'user', content: 'go' }] } },
+      response: {
+        status: 200, model: 'deepseek-v4', stop_reason: null,
+        content: [{ type: 'tool_use', id, name: 'subagent', input: { description: '研究员', subagent_type: 'research', prompt } }],
+        usage: { input_tokens: 1, output_tokens: 1 },
+      },
+    };
+  }
+
+  it('claude 同名(subagent)自定义工具不误登记为 Agent 派发', () => {
+    emit(claudeToolRec('subagent', 'toolu_custom_subagent', TASK));
+    emit(subRec()); // 真实子代理（cc_is_subagent），任务文本恰为 TASK
+    const meta = metaOf(subIdOf(TASK));
+    expect(meta.toolUseId).toBeNull(); // 不误回填自定义工具的 toolUseId
+    expect(meta.name).toBeNull();
+    expect(meta.agentType).toBeNull();
+  });
+
+  it('dsh 派发工具 subagent 归一为 Agent 登记（别名仅 dsh 生效）', () => {
+    emit(dshDispatchRec(TASK, 'toolu_dsh_dispatch'));
+    emit(subRec()); // 真实子代理，任务 = dsh 派发 prompt
+    const meta = metaOf(subIdOf(TASK));
+    expect(meta.toolUseId).toBe('toolu_dsh_dispatch');
+    expect(meta.name).toBe('研究员');
+    expect(meta.agentType).toBe('research');
+  });
+
+  it('盘上重放不把同名(subagent)工具当 Agent 派发', () => {
+    // 手工写主捕获：assistant 行带 name:'subagent' 的 tool_use（claude 自定义
+    // 工具落盘逐字节不变），bootstrap 重放不应把它误登记为派发。
+    fs.mkdirSync(path.join(tmpDir, SID), { recursive: true });
+    fs.writeFileSync(sessionFilePath(SID), JSON.stringify({
+      type: 'assistant',
+      message: { role: 'assistant', content: [{ type: 'tool_use', id: 'toolu_custom_subagent', name: 'subagent', input: { description: '自定义', subagent_type: 'mcp', prompt: TASK } }] },
+      timestamp: new Date().toISOString(),
+    }) + '\n');
+    emit(subRec()); // 新进程首见：bootstrap 重放主捕获 → 不应登记
+    expect(metaOf(subIdOf(TASK)).toolUseId).toBeNull();
+  });
 });

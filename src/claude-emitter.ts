@@ -250,6 +250,10 @@ export function emit(rec: ProxyRecord): void {
   if (!body) return;
   const sid = rec.sid;
   const isSub = isSubagentRecord(rec);
+  // dsh:血缘来自 body.dsh_session_log.session(权威),与 claude 的
+  // cc_is_subagent 是两个互不影响的分支。提前读取——下方派发收集与落盘
+  // content 归一都按它区分 dsh/claude:别名归一只对 dsh 生效。
+  const dshHeader = readDshSessionHeader(body);
 
   // Collect Agent-tool dispatch (prompt → {toolUseId, name, type}) from
   // ALL records (main + subagent) — a subagent that spawns its OWN subagent
@@ -264,9 +268,11 @@ export function emit(rec: ProxyRecord): void {
     const blocks = Array.isArray(rec.response.content) ? rec.response.content as AnthropicContentBlock[] : [];
     for (const b of blocks) {
       if (b.type !== 'tool_use' || !b.input) continue;
-      // 工具名归一与落盘同构（dsh 'subagent' → 'Agent'）：live 观察与盘上
-      // 重放必须产出一致的登记表，否则重启前后关联行为分叉
-      const toolName = typeof b.name === 'string' ? (DISPATCH_TOOL_ALIAS[b.name] ?? b.name) : '';
+      // 别名归一只对 dsh 生效（'subagent' → 'Agent'）；claude 路径精确匹配
+      // 'Agent'——若某 claude 会话有同名(subagent)的自定义/MCP 工具，无条件
+      // 改名会把非派发误登记（与下方 content 归一同语义）。
+      const rawName = typeof b.name === 'string' ? b.name : '';
+      const toolName = dshHeader ? (DISPATCH_TOOL_ALIAS[rawName] ?? rawName) : rawName;
       if (toolName !== 'Agent') continue;
       const inp = b.input as { description?: string; subagent_type?: string; prompt?: string };
       const dispatchKey = inp.prompt?.trim();
@@ -281,9 +287,6 @@ export function emit(rec: ProxyRecord): void {
 
   // Resolve context + target file.
   let targetFile: string;
-  // dsh:血缘来自 body.dsh_session_log.session(权威),与 claude 的
-  // cc_is_subagent 是两个互不影响的分支。
-  const dshHeader = readDshSessionHeader(body);
   const rawDshParentSid = dshHeader?.parentSession ?? null;
   // parentSession 来自请求 body（不可信 wire 数据）,而它会进文件路径
   // （<父sid>/subagents/…）—— 必须先过 isSafeSid,与 header sid / claude 的

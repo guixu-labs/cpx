@@ -56,9 +56,9 @@ interface SubagentMetaSnapshot {
   subagentSessionId: string | null;
 }
 
-// dsh 的派发工具名归一（'subagent' → 'Agent'）：live 观察与盘上重放必须同构
-// ——emitter 落盘前已按此别名改写，重放读到的就是 'Agent'；live 观察若不
-// 同样归一，重启前后登记表内容会分叉。
+// dsh 的派发工具名归一（'subagent' → 'Agent'）：只对 dsh 生效——claude 路径
+// 精确匹配 'Agent'，同名(subagent)的自定义/MCP 工具不改名。emitter 落盘前已
+// 按此改写 dsh 派发，重放读到即 'Agent'，无需再归一。
 export const DISPATCH_TOOL_ALIAS: Record<string, string> = { subagent: 'Agent' };
 
 // ── 任务文本提取（request body 与捕获文件双场景共用）──────────────────
@@ -105,7 +105,7 @@ function collectDispatchesFromFile(file: string, into: Map<string, DispatchInfo>
     if (l.type !== 'assistant' || !Array.isArray(l.message?.content)) return;
     for (const b of l.message!.content as Array<Record<string, unknown>>) {
       if (b?.type !== 'tool_use' || typeof b.input !== 'object' || b.input === null) continue;
-      const name = typeof b.name === 'string' ? (DISPATCH_TOOL_ALIAS[b.name] ?? b.name) : '';
+      const name = typeof b.name === 'string' ? b.name : '';
       if (name !== 'Agent') continue;
       const inp = b.input as { description?: unknown; subagent_type?: unknown; prompt?: unknown };
       const key = typeof inp.prompt === 'string' ? inp.prompt.trim() : '';
