@@ -81,6 +81,11 @@ export function subagentFilePath(sid: string, subId: string): string {
   return path.join(dir(), sid, 'subagents', `${subId}.jsonl`);
 }
 
+// 会话的子代理捕获目录（claude-linkage 扫描 meta / 子文件用）。
+export function subagentsDirPath(sid: string): string {
+  return path.join(dir(), sid, 'subagents');
+}
+
 export function subagentMetaPath(sid: string, subId: string): string {
   return subagentFilePath(sid, subId).replace(/\.jsonl$/, '.meta.json');
 }
