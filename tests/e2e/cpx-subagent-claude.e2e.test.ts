@@ -82,14 +82,20 @@ function assertSubagentArtifacts(sid: string, task: string): void {
   expect(fs.existsSync(metaPath), `subagent meta ${metaPath}`).toBe(true);
   const meta = JSON.parse(fs.readFileSync(metaPath, 'utf8')) as {
     toolUseId: string | null; name: string | null; agentType: string | null;
-    x_lake: { schema: string; data: { toolUseId: string | null; name: string | null; agentType: string | null; subagentSessionId: string } };
+    claudeAgentId: string | null; task: string | null; idSource: string;
+    x_lake: { schema: string; data: { toolUseId: string | null; name: string | null; agentType: string | null; subagentSessionId: string; claudeAgentId: string | null; task: string | null; idSource: string } };
   };
   expect(meta.toolUseId).toBe('toolu_agent_1');
   expect(meta.name).toBe('研究');
   expect(meta.agentType).toBe('researcher');
   expect(meta.x_lake.schema).toBe('cc-subagent-meta');
+  // 关联扩展字段（claude-linkage）：task=升级写安全键、claudeAgentId=跨进程
+  // 成员身份、idSource=规范 id 语义声明（claude 捕获恒为文件名 id）
+  expect(meta.task).toBe('研究任务X');
+  expect(meta.idSource).toBe('fileStem');
   expect(meta.x_lake.data).toEqual({
     toolUseId: 'toolu_agent_1', name: '研究', agentType: 'researcher', subagentSessionId: subId,
+    claudeAgentId: null, task: '研究任务X', idSource: 'fileStem',
   });
 }
 

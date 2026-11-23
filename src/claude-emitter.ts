@@ -27,6 +27,8 @@ import path from 'node:path';
 import type { ProxyRecord, Protocol, AnthropicContentBlock, AnthropicUsage, OpenAIUsage } from './types';
 import { sessionFilePath, sessionMetaPath, subagentFilePath, subagentMetaPath, appendClaudeLine, writeMeta, PROXY_DIR } from './writer';
 import { isSafeSid } from './session-resolver';
+import { linkageFor, subagentTaskTextOf, DISPATCH_TOOL_ALIAS } from './claude-linkage';
+import { emitStateFor, textOf, isInjectionText } from './claude-emit-state';
 
 // x_lake 命名空间（docs/lake-schema-spec.md）：claude 原生字段是冻结
 // 信封，扩展数据进带 (schema,version) 声明的口袋。legacy 顶层字段
@@ -158,8 +160,8 @@ function isTitleGenRecord(rec: ProxyRecord): boolean {
 // insight 的 listSubagentSessions() 期待的布局。
 
 /** 工具名归一:insight 的 bridge-builder 只认 task/Agent;
- *  dsh 的派发工具叫 subagent —— 在落盘时翻译,不改 insight。 */
-const DISPATCH_TOOL_ALIAS: Record<string, string> = { subagent: 'Agent' };
+ *  dsh 的派发工具叫 subagent —— 在落盘时翻译,不改 insight。
+ *  常量定义在 claude-linkage（live 派发观察与盘上重放同构共用）。 */
 
 interface DshSessionHeader {
   id?: string;
@@ -211,97 +213,36 @@ function subagentTask(rec: ProxyRecord): string | null {
   if (!msgs || !msgs.length) return null;
   const m0 = msgs[0];
   if (m0.role !== 'user') return null;
-  // trim 归一：真机子代理任务块带尾随换行，而父侧 Agent tool_use 的
-  // prompt 无——原始字符串建键必然失配（派发收集/回填/subId 分桶同键）
-  if (typeof m0.content === 'string') {
-    const t = m0.content.trim();
-    return (t && !t.startsWith('<system-reminder>') && !t.startsWith('The user stepped away')) ? t : null;
-  }
-  if (Array.isArray(m0.content)) {
-    for (const b of m0.content) {
-      if (b.type !== 'text' || !b.text) continue;
-      const tr = b.text.trim();
-      if (!tr || tr.startsWith('<system-reminder>') || tr.startsWith('The user stepped away')) continue;
-      return tr;
-    }
-  }
-  return null;
+  // 首条用户消息里的任务文本：reminder/stepped-away 块跳过 + trim 归一。
+  // 归一逻辑与捕获文件回读（claude-linkage.taskOfSubagentFile）、父侧派发
+  // prompt 键共用同一实现——三处同键是关联成立的根基。
+  return subagentTaskTextOf(m0.content);
 }
 
-// --- per-proxy-process state (one cpx run = one proxy process) ---
-// Delta-emit by OCCURRENCE COUNT, not by array length: claude-code rewrites
-// the messages array on stepped-away recaps / edits / compaction, so a
-// message-count cursor silently skips new messages that land inside the
-// already-consumed range. A multiset (hash → emitted count) detects new
-// messages regardless of rewrite, shrink, or same-length reordering.
-const emittedCounts = new Map<string, Map<string, number>>(); // contextKey → hash → emitted count
-// contextKey → md5 fingerprints of injection system messages emitted IN FULL
-const emittedInjections = new Map<string, Set<string>>();
-const agentDispatch = new Map<string, { toolUseId: string | null; name: string | null; type: string | null }>();
-const subIdForTask = new Map<string, string>();
-// agent-id 头 → subId（首见时登记；续会请求带头再来 → 命中同 subId → 同文件
-// 追加 + 继承 meta 归属）。头是 claude 逻辑成员级身份，跨重启稳定（实验验证
-// x-claude-code-agent-id 仅子代理请求携带）；缺失时回落 prompt 分桶不劣化。
-const subIdForAgentId = new Map<string, string>();
-const metaWritten = new Set<string>();
-// 异步派发（后台 Agent，requestShape:background）：子代理首轮请求先于父响应
-// 落盘（父 turn 仍在流式输出）→ 首写 meta 时 agentDispatch 尚无该派发，
-// toolUseId/name/type 全 null。原生 harness 自己持有派发 id（原生 meta 后台
-// 型也带 toolUseId），对齐之：未解析的 meta 挂起，派发在后续 emit 到达时
-// 回填重写。write-once 只约束「创建」；挂起集以 subId 记父 sid + task。
-const pendingSubMeta = new Map<string, { sid: string; task: string }>();
-// contextKey → 已发出的 assistant 行数（= 该上下文的 wire 轮次号，cc-wire-round.roundIndex）
-const roundCount = new Map<string, number>();
+// --- per-proxy-process state ---
+// 增量落盘状态（multiset 计数 / 注入指纹 / 轮次号）在 claude-emit-state：
+// 盘上捕获为真源（进程首见文件重放重建），重启自愈。历史上这里是纯内存
+//（emittedCounts/emittedInjections/roundCount），跨进程即清零 → 重放历史
+// 整批重发（背景事件 ×5 放大，主文件 25%+ 是重放副本）。
+// 派发关联状态同理在 claude-linkage。
+// 仍在内存的一次性写守门（sessionMetaWritten/dshMetaWritten）：跨进程重触发
+// 只会幂等重写同值 meta，无状态可失，不参与重建。
+// dsh 子代理 meta 已写集（dsh 分支自持——claude 子代理的 meta 生命周期
+// 已收编 claude-linkage 的幂等升级写，不再用内存集合守门）
+const dshMetaWritten = new Set<string>();
 const sessionMetaWritten = new Set<string>();
 
-function subIdFor(task: string): string {
-  let id = subIdForTask.get(task);
-  if (!id) {
-    id = 'sub-' + crypto.createHash('md5').update(task).digest('hex').slice(0, 12);
-    subIdForTask.set(task, id);
-  }
-  return id;
-}
-
-// 子代理 meta（cc-subagent-meta 双信封）单点写：创建与回填共用同一形态。
-// meta 未解析（agentDispatch 缺项）时三字段 null，由调用方挂起待回填。
-function writeSubagentMeta(
-  sid: string,
-  subId: string,
-  meta: { toolUseId: string | null; name: string | null; type: string | null } | undefined,
-): void {
-  const toolUseId = meta?.toolUseId ?? null;
-  const name = meta?.name ?? null;
-  const agentType = meta?.type ?? null;
-  const inner = { toolUseId, name, agentType, subagentSessionId: subId };
-  writeMeta(subagentMetaPath(sid, subId), {
-    toolUseId, name, agentType,
-    x_lake: xLake('cc-subagent-meta', inner),
-  });
-}
+// claude 派发关联（Agent tool_use 登记 ↔ 子代理 meta）在 claude-linkage：
+// 盘上捕获为真源（启动重放 + 幂等升级写 + 成员头落盘），进程重启自愈。
+// 历史上这里是纯内存（agentDispatch/pendingSubMeta/subIdForAgentId/
+// metaWritten），跨进程即失守 → meta 全空 → insight 孤儿子代理。
 
 function toISO(ts: number): string {
   return new Date(ts).toISOString();
 }
 
-// Joined text of a message content (string or text blocks).
-function textOf(content: string | AnthropicContentBlock[] | undefined): string | null {
-  if (typeof content === 'string') return content;
-  if (!Array.isArray(content)) return null;
-  const parts: string[] = [];
-  for (const b of content) {
-    if (b.type === 'text' && b.text) parts.push(b.text);
-  }
-  return parts.join('\n');
-}
-
-// An "injection" is the agent-registry / skills-list system message claude-code
-// re-appends on later rounds. Identified by its opening line so ordinary
-// system messages are never deduped.
-function isInjectionText(text: string): boolean {
-  return text.startsWith('Available agent types for the Agent tool')
-    || text.startsWith('The following skills are available');
-}
+// textOf / isInjectionText：live 发射与盘上重放（claude-emit-state）共用的
+// 提取/指纹，已收编 claude-emit-state——同构是重建正确的前提。
 
 export function emit(rec: ProxyRecord): void {
   if (isTitleGenRecord(rec)) return;
@@ -309,43 +250,43 @@ export function emit(rec: ProxyRecord): void {
   if (!body) return;
   const sid = rec.sid;
   const isSub = isSubagentRecord(rec);
+  // dsh:血缘来自 body.dsh_session_log.session(权威),与 claude 的
+  // cc_is_subagent 是两个互不影响的分支。提前读取——下方派发收集与落盘
+  // content 归一都按它区分 dsh/claude:别名归一只对 dsh 生效。
+  const dshHeader = readDshSessionHeader(body);
 
-  // Collect Agent-tool dispatch meta (prompt → {toolUseId, name, type}) from
+  // Collect Agent-tool dispatch (prompt → {toolUseId, name, type}) from
   // ALL records (main + subagent) — a subagent that spawns its OWN subagent
   // emits that Agent tool_use inside an isSub record; gating on !isSub would
   // miss nested dispatches, leaving meta.json with null toolUseId/name/type.
   // Keyed by prompt (unique enough across contexts — each Agent tool_use has
-  // a distinct task prompt).
+  // a distinct task prompt). 关联状态归 claude-linkage：进程首见该会话先从
+  // 盘上捕获重放登记（重启自愈），新派发登记后立即补链挂起 meta。
   {
+    const linkage = linkageFor(sid);
+    linkage.ensureBootstrapped();
     const blocks = Array.isArray(rec.response.content) ? rec.response.content as AnthropicContentBlock[] : [];
     for (const b of blocks) {
-      if (b.type !== 'tool_use' || b.name !== 'Agent' || !b.input) continue;
+      if (b.type !== 'tool_use' || !b.input) continue;
+      // 别名归一只对 dsh 生效（'subagent' → 'Agent'）；claude 路径精确匹配
+      // 'Agent'——若某 claude 会话有同名(subagent)的自定义/MCP 工具，无条件
+      // 改名会把非派发误登记（与下方 content 归一同语义）。
+      const rawName = typeof b.name === 'string' ? b.name : '';
+      const toolName = dshHeader ? (DISPATCH_TOOL_ALIAS[rawName] ?? rawName) : rawName;
+      if (toolName !== 'Agent') continue;
       const inp = b.input as { description?: string; subagent_type?: string; prompt?: string };
       const dispatchKey = inp.prompt?.trim();
-      if (dispatchKey && !agentDispatch.has(dispatchKey)) {
-        agentDispatch.set(dispatchKey, {
-          toolUseId: b.id ?? null,
-          name: inp.description ?? null,
-          type: inp.subagent_type ?? null,
-        });
-      }
+      if (!dispatchKey) continue;
+      linkage.observeDispatch(dispatchKey, {
+        toolUseId: b.id ?? null,
+        name: inp.description ?? null,
+        type: inp.subagent_type ?? null,
+      });
     }
   }
 
-  // 异步派发回填：本轮收集到的新派发，补写此前挂起的子代理 meta
-  for (const [subId, p] of pendingSubMeta) {
-    const meta = agentDispatch.get(p.task);
-    if (!meta) continue;
-    pendingSubMeta.delete(subId);
-    writeSubagentMeta(p.sid, subId, meta);
-  }
-
   // Resolve context + target file.
-  let contextKey: string;
   let targetFile: string;
-  // dsh:血缘来自 body.dsh_session_log.session(权威),与 claude 的
-  // cc_is_subagent 是两个互不影响的分支。
-  const dshHeader = readDshSessionHeader(body);
   const rawDshParentSid = dshHeader?.parentSession ?? null;
   // parentSession 来自请求 body（不可信 wire 数据）,而它会进文件路径
   // （<父sid>/subagents/…）—— 必须先过 isSafeSid,与 header sid / claude 的
@@ -361,10 +302,9 @@ export function emit(rec: ProxyRecord): void {
     // dsh 子代理:子用自己的 sid,记录要落到【父】的 subagents 目录下,
     // 布局与 claude 完全一致 → insight 侧零改动即可发现。
     const childId = sid;
-    contextKey = childId;
     targetFile = subagentFilePath(dshParentSid, childId);
-    if (!metaWritten.has(childId)) {
-      metaWritten.add(childId);
+    if (!dshMetaWritten.has(childId)) {
+      dshMetaWritten.add(childId);
       const desc = readDshSubagentDescriptor(body);
       const name = desc?.label ?? null;
       const agentType = desc?.mode ?? desc?.provider ?? null;
@@ -382,7 +322,6 @@ export function emit(rec: ProxyRecord): void {
       });
     }
   } else if (!isSub) {
-    contextKey = 'main';
     targetFile = sessionFilePath(sid);
     if (!sessionMetaWritten.has(sid)) {
       sessionMetaWritten.add(sid);
@@ -398,27 +337,25 @@ export function emit(rec: ProxyRecord): void {
     }
   } else {
     const task = subagentTask(rec);
-    // 归属优先级：x-claude-code-agent-id 头（逻辑成员身份，续会继承）> 任务
-    // prompt md5（现状分桶）。按头分桶时续会流直接落入原成员文件——原生
-    // harness 把续会记回同一 agent 文件，此处分桶与之对齐
-    // （claudeAgentId 类型即 string | null，入口 server.ts 已把 undefined 归一，
-    //   消费侧不再需要 ?? null——运行时 undefined 与 null 同走 falsy 分支）
-    const agentId = rec.request.claudeAgentId;
-    let subId: string | null = agentId ? subIdForAgentId.get(agentId) ?? null : null;
-    if (!subId) {
-      subId = task ? subIdFor(task) : 'sub-unknown';
-      if (agentId) subIdForAgentId.set(agentId, subId);
-    }
-    contextKey = subId;
+    // 归属优先级：x-claude-code-agent-id 头（逻辑成员身份，续会继承；索引
+    // 以盘上 meta.claudeAgentId 种子，跨进程稳定）> 任务 prompt md5（现状
+    // 分桶）。按头分桶时续会流直接落入原成员文件——原生 harness 把续会记
+    // 回同一 agent 文件，此处分桶与之对齐
+    // （claudeAgentId 类型即 string | null，入口 server.ts 已把 undefined 归一）
+    const agentId = rec.request.claudeAgentId ?? null;
+    const linkage = linkageFor(sid);
+    const subId = linkage.resolveSubId(task, agentId);
     targetFile = subagentFilePath(sid, subId);
-    if (task && !metaWritten.has(subId)) {
-      metaWritten.add(subId);
-      const meta = agentDispatch.get(task);
-      writeSubagentMeta(sid, subId, meta);
-      // 派发未到（异步先于父响应落盘）→ 挂起待回填
-      if (!meta) pendingSubMeta.set(subId, { sid, task });
-    }
+    // meta 幂等升级写（claude-linkage 单点）：创建/claudeAgentId 落盘/挂起
+    // 补链共用一条路径；异步派发（子首轮先于父响应）先写 null，父响应到场
+    // 时由 observeDispatch → 补链升级，重启后由 ensureBootstrapped 扫描补链
+    linkage.ensureMeta(subId, task, agentId);
   }
+
+  // 增量落盘状态（multiset 计数 / 注入指纹 / 轮次号）：按捕获文件惰性建
+  // 实例，进程首见即从盘上重放重建（重启自愈，见 claude-emit-state）。
+  const state = emitStateFor(targetFile);
+  state.ensureBootstrapped();
 
   // Delta-emit new non-assistant messages (user incl. tool_result, system).
   // Skip role:"assistant" — those are PRIOR responses already emitted as their
@@ -437,9 +374,12 @@ export function emit(rec: ProxyRecord): void {
   // full.
   const dedup = dedupEnabled();
   const msgs = body.messages ?? [];
-  const counts = emittedCounts.get(contextKey) ?? new Map<string, number>();
-  const seen = new Map<string, number>();
-  const injections = dedup ? (emittedInjections.get(contextKey) ?? new Set<string>()) : new Set<string>();
+  // Delta-emit by OCCURRENCE COUNT, not by array length: claude-code rewrites
+  // the messages array on stepped-away recaps / edits / compaction, so a
+  // message-count cursor silently skips new messages that land inside the
+  // already-consumed range. A multiset (hash → emitted count) detects new
+  // messages regardless of rewrite, shrink, or same-length reordering.
+  const seen = new Map<string, number>(); // 本请求内副本序号（跨请求/跨进程的已发数在 state）
   const markedInRound = new Set<string>(); // 每轮每个 fingerprint 只发一个 [已压缩] 标记
   for (const m of msgs) {
     if (m.role === 'assistant') continue;
@@ -455,7 +395,7 @@ export function emit(rec: ProxyRecord): void {
     const fingerprint = injectionText && isInjectionText(injectionText)
       ? crypto.createHash('md5').update(injectionText).digest('hex')
       : null;
-    if (fingerprint && injections.has(fingerprint)) {
+    if (fingerprint && state.hasInjection(fingerprint)) {
       if (markedInRound.has(fingerprint)) {
         // 同轮已发过 [已压缩] 标记，后续副本静默丢弃（不计入 counts，
         // 避免下一轮误判为「已发」而漏标）
@@ -470,31 +410,29 @@ export function emit(rec: ProxyRecord): void {
         originalChars: injectionText!.length,
         source: proxySourceMarker(rec.protocol, body),
         x_lake: xLake('cc-wire-input', {
-          roundIndex: roundCount.get(contextKey) ?? 0,
+          roundIndex: state.roundIndex(),
           kind: 'dedup-placeholder',
           dedup: { originalChars: injectionText!.length, fingerprint },
         }),
       });
-      counts.set(hash, occ + 1);
+      state.noteEmitted(hash, occ);
       continue;
     }
     // Multiset skip: non-injection duplicates already emitted (silent drop)
-    if (occ < (counts.get(hash) ?? 0)) continue;
+    if (occ < state.emittedCount(hash)) continue;
     appendClaudeLine(targetFile, {
       type: m.role === 'system' ? 'system' : 'user',
       message: { role: m.role, content: m.content ?? '' },
       timestamp: toISO(rec.receivedAt),
       source: proxySourceMarker(rec.protocol, body),
       x_lake: xLake('cc-wire-input', {
-        roundIndex: roundCount.get(contextKey) ?? 0,
+        roundIndex: state.roundIndex(),
         kind: wireInputKind(m),
       }),
     });
-    counts.set(hash, occ + 1);
-    if (fingerprint) injections.add(fingerprint);
+    state.noteEmitted(hash, occ);
+    if (fingerprint) state.noteInjection(fingerprint);
   }
-  emittedCounts.set(contextKey, counts);
-  if (dedup) emittedInjections.set(contextKey, injections);
 
   // Emit the response as one assistant line. Extension fields `system` + `tools`
   // (verbatim request body) ride on this line; the claude-jsonl adapter ignores
@@ -515,8 +453,8 @@ export function emit(rec: ProxyRecord): void {
       const alias = b.type === 'tool_use' && b.name ? DISPATCH_TOOL_ALIAS[b.name] : undefined;
       return alias ? { ...b, name: alias } : b;
     });
-  const roundIndex = roundCount.get(contextKey) ?? 0;
-  roundCount.set(contextKey, roundIndex + 1);
+  const roundIndex = state.roundIndex();
+  state.noteRound();
   appendClaudeLine(targetFile, {
     type: 'assistant',
     message: {

@@ -12,6 +12,7 @@ import os from 'node:os';
 import {
   compressCaptureFile as compressTo7z,
   decompressToPlain,
+  readCaptureBuffer,
   readCaptureText as readArchivedText,
 } from './compression';
 
@@ -81,6 +82,11 @@ export function subagentFilePath(sid: string, subId: string): string {
   return path.join(dir(), sid, 'subagents', `${subId}.jsonl`);
 }
 
+// 会话的子代理捕获目录（claude-linkage 扫描 meta / 子文件用）。
+export function subagentsDirPath(sid: string): string {
+  return path.join(dir(), sid, 'subagents');
+}
+
 export function subagentMetaPath(sid: string, subId: string): string {
   return subagentFilePath(sid, subId).replace(/\.jsonl$/, '.meta.json');
 }
@@ -143,4 +149,46 @@ export function compressCaptureFile(p: string): string {
 /** resume 准备：压缩态（.7z/.gz）→ 解压回明文 scratch（删压缩态，防双份数据分叉）。幂等。 */
 export function ensureWritableCapture(p: string): string {
   return decompressToPlain(resolveCapturePath(p));
+}
+
+// Buffer 逐行遍历（按 \n 字节定位切片、逐行 toString）：避免整段 Buffer
+// 一次 toString 物化成单字符串——明文/解压后 >512MB 过 V8 单字符串上限必炸。
+function forEachBufferLine(buf: Buffer, onLine: (line: string) => void): void {
+  let start = 0;
+  for (;;) {
+    const nl = buf.indexOf(0x0a, start);
+    if (nl === -1) {
+      onLine(buf.subarray(start, buf.length).toString('utf8'));
+      return;
+    }
+    onLine(buf.subarray(start, nl).toString('utf8'));
+    start = nl + 1;
+  }
+}
+
+// 捕获文件逐行重放的最小解析（盘上重建的共用原语：claude-linkage 的派发
+// 登记、claude-emit-state 的增量计数都从「捕获行 = 已发出的增量」这一真源
+// 重建进程内状态）。三形态透明解压读取；坏行静默跳过——重放场景宁缺毋滥，
+// 绝不阻断捕获主路径。
+export function forEachCaptureLine(file: string, onLine: (line: unknown) => void): void {
+  const resolved = resolveCapturePath(file);
+  if (!fs.existsSync(resolved)) return; // 新会话无历史：合法，静默
+  let buf: Buffer;
+  try {
+    buf = readCaptureBuffer(resolved);
+  } catch (err) {
+    // 读/解压失败（超限、损坏档案等）不得静默——静默会让重放空态起步，
+    // 重放历史整批当新消息再落盘。显式告警，不阻断捕获主路径。
+    console.error(`[cpx] 重放读取失败 ${resolved}: ${String((err as Error).message ?? err)}`);
+    return;
+  }
+  forEachBufferLine(buf, (raw) => {
+    const line = raw.trim();
+    if (!line) return;
+    try {
+      onLine(JSON.parse(line));
+    } catch {
+      // 坏行（截断写入等）：跳过
+    }
+  });
 }
