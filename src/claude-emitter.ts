@@ -28,6 +28,7 @@ import type { ProxyRecord, Protocol, AnthropicContentBlock, AnthropicUsage, Open
 import { sessionFilePath, sessionMetaPath, subagentFilePath, subagentMetaPath, appendClaudeLine, writeMeta, PROXY_DIR } from './writer';
 import { isSafeSid } from './session-resolver';
 import { linkageFor, subagentTaskTextOf, DISPATCH_TOOL_ALIAS } from './claude-linkage';
+import { emitStateFor, textOf, isInjectionText } from './claude-emit-state';
 
 // x_lake 命名空间（docs/lake-schema-spec.md）：claude 原生字段是冻结
 // 信封，扩展数据进带 (schema,version) 声明的口袋。legacy 顶层字段
@@ -218,20 +219,17 @@ function subagentTask(rec: ProxyRecord): string | null {
   return subagentTaskTextOf(m0.content);
 }
 
-// --- per-proxy-process state (one cpx run = one proxy process) ---
-// Delta-emit by OCCURRENCE COUNT, not by array length: claude-code rewrites
-// the messages array on stepped-away recaps / edits / compaction, so a
-// message-count cursor silently skips new messages that land inside the
-// already-consumed range. A multiset (hash → emitted count) detects new
-// messages regardless of rewrite, shrink, or same-length reordering.
-const emittedCounts = new Map<string, Map<string, number>>(); // contextKey → hash → emitted count
-// contextKey → md5 fingerprints of injection system messages emitted IN FULL
-const emittedInjections = new Map<string, Set<string>>();
+// --- per-proxy-process state ---
+// 增量落盘状态（multiset 计数 / 注入指纹 / 轮次号）在 claude-emit-state：
+// 盘上捕获为真源（进程首见文件重放重建），重启自愈。历史上这里是纯内存
+//（emittedCounts/emittedInjections/roundCount），跨进程即清零 → 重放历史
+// 整批重发（背景事件 ×5 放大，主文件 25%+ 是重放副本）。
+// 派发关联状态同理在 claude-linkage。
+// 仍在内存的一次性写守门（sessionMetaWritten/dshMetaWritten）：跨进程重触发
+// 只会幂等重写同值 meta，无状态可失，不参与重建。
 // dsh 子代理 meta 已写集（dsh 分支自持——claude 子代理的 meta 生命周期
 // 已收编 claude-linkage 的幂等升级写，不再用内存集合守门）
 const dshMetaWritten = new Set<string>();
-// contextKey → 已发出的 assistant 行数（= 该上下文的 wire 轮次号，cc-wire-round.roundIndex）
-const roundCount = new Map<string, number>();
 const sessionMetaWritten = new Set<string>();
 
 // claude 派发关联（Agent tool_use 登记 ↔ 子代理 meta）在 claude-linkage：
@@ -243,24 +241,8 @@ function toISO(ts: number): string {
   return new Date(ts).toISOString();
 }
 
-// Joined text of a message content (string or text blocks).
-function textOf(content: string | AnthropicContentBlock[] | undefined): string | null {
-  if (typeof content === 'string') return content;
-  if (!Array.isArray(content)) return null;
-  const parts: string[] = [];
-  for (const b of content) {
-    if (b.type === 'text' && b.text) parts.push(b.text);
-  }
-  return parts.join('\n');
-}
-
-// An "injection" is the agent-registry / skills-list system message claude-code
-// re-appends on later rounds. Identified by its opening line so ordinary
-// system messages are never deduped.
-function isInjectionText(text: string): boolean {
-  return text.startsWith('Available agent types for the Agent tool')
-    || text.startsWith('The following skills are available');
-}
+// textOf / isInjectionText：live 发射与盘上重放（claude-emit-state）共用的
+// 提取/指纹，已收编 claude-emit-state——同构是重建正确的前提。
 
 export function emit(rec: ProxyRecord): void {
   if (isTitleGenRecord(rec)) return;
@@ -298,7 +280,6 @@ export function emit(rec: ProxyRecord): void {
   }
 
   // Resolve context + target file.
-  let contextKey: string;
   let targetFile: string;
   // dsh:血缘来自 body.dsh_session_log.session(权威),与 claude 的
   // cc_is_subagent 是两个互不影响的分支。
@@ -318,7 +299,6 @@ export function emit(rec: ProxyRecord): void {
     // dsh 子代理:子用自己的 sid,记录要落到【父】的 subagents 目录下,
     // 布局与 claude 完全一致 → insight 侧零改动即可发现。
     const childId = sid;
-    contextKey = childId;
     targetFile = subagentFilePath(dshParentSid, childId);
     if (!dshMetaWritten.has(childId)) {
       dshMetaWritten.add(childId);
@@ -339,7 +319,6 @@ export function emit(rec: ProxyRecord): void {
       });
     }
   } else if (!isSub) {
-    contextKey = 'main';
     targetFile = sessionFilePath(sid);
     if (!sessionMetaWritten.has(sid)) {
       sessionMetaWritten.add(sid);
@@ -363,13 +342,17 @@ export function emit(rec: ProxyRecord): void {
     const agentId = rec.request.claudeAgentId ?? null;
     const linkage = linkageFor(sid);
     const subId = linkage.resolveSubId(task, agentId);
-    contextKey = subId;
     targetFile = subagentFilePath(sid, subId);
     // meta 幂等升级写（claude-linkage 单点）：创建/claudeAgentId 落盘/挂起
     // 补链共用一条路径；异步派发（子首轮先于父响应）先写 null，父响应到场
     // 时由 observeDispatch → 补链升级，重启后由 ensureBootstrapped 扫描补链
     linkage.ensureMeta(subId, task, agentId);
   }
+
+  // 增量落盘状态（multiset 计数 / 注入指纹 / 轮次号）：按捕获文件惰性建
+  // 实例，进程首见即从盘上重放重建（重启自愈，见 claude-emit-state）。
+  const state = emitStateFor(targetFile);
+  state.ensureBootstrapped();
 
   // Delta-emit new non-assistant messages (user incl. tool_result, system).
   // Skip role:"assistant" — those are PRIOR responses already emitted as their
@@ -388,9 +371,12 @@ export function emit(rec: ProxyRecord): void {
   // full.
   const dedup = dedupEnabled();
   const msgs = body.messages ?? [];
-  const counts = emittedCounts.get(contextKey) ?? new Map<string, number>();
-  const seen = new Map<string, number>();
-  const injections = dedup ? (emittedInjections.get(contextKey) ?? new Set<string>()) : new Set<string>();
+  // Delta-emit by OCCURRENCE COUNT, not by array length: claude-code rewrites
+  // the messages array on stepped-away recaps / edits / compaction, so a
+  // message-count cursor silently skips new messages that land inside the
+  // already-consumed range. A multiset (hash → emitted count) detects new
+  // messages regardless of rewrite, shrink, or same-length reordering.
+  const seen = new Map<string, number>(); // 本请求内副本序号（跨请求/跨进程的已发数在 state）
   const markedInRound = new Set<string>(); // 每轮每个 fingerprint 只发一个 [已压缩] 标记
   for (const m of msgs) {
     if (m.role === 'assistant') continue;
@@ -406,7 +392,7 @@ export function emit(rec: ProxyRecord): void {
     const fingerprint = injectionText && isInjectionText(injectionText)
       ? crypto.createHash('md5').update(injectionText).digest('hex')
       : null;
-    if (fingerprint && injections.has(fingerprint)) {
+    if (fingerprint && state.hasInjection(fingerprint)) {
       if (markedInRound.has(fingerprint)) {
         // 同轮已发过 [已压缩] 标记，后续副本静默丢弃（不计入 counts，
         // 避免下一轮误判为「已发」而漏标）
@@ -421,31 +407,29 @@ export function emit(rec: ProxyRecord): void {
         originalChars: injectionText!.length,
         source: proxySourceMarker(rec.protocol, body),
         x_lake: xLake('cc-wire-input', {
-          roundIndex: roundCount.get(contextKey) ?? 0,
+          roundIndex: state.roundIndex(),
           kind: 'dedup-placeholder',
           dedup: { originalChars: injectionText!.length, fingerprint },
         }),
       });
-      counts.set(hash, occ + 1);
+      state.noteEmitted(hash, occ);
       continue;
     }
     // Multiset skip: non-injection duplicates already emitted (silent drop)
-    if (occ < (counts.get(hash) ?? 0)) continue;
+    if (occ < state.emittedCount(hash)) continue;
     appendClaudeLine(targetFile, {
       type: m.role === 'system' ? 'system' : 'user',
       message: { role: m.role, content: m.content ?? '' },
       timestamp: toISO(rec.receivedAt),
       source: proxySourceMarker(rec.protocol, body),
       x_lake: xLake('cc-wire-input', {
-        roundIndex: roundCount.get(contextKey) ?? 0,
+        roundIndex: state.roundIndex(),
         kind: wireInputKind(m),
       }),
     });
-    counts.set(hash, occ + 1);
-    if (fingerprint) injections.add(fingerprint);
+    state.noteEmitted(hash, occ);
+    if (fingerprint) state.noteInjection(fingerprint);
   }
-  emittedCounts.set(contextKey, counts);
-  if (dedup) emittedInjections.set(contextKey, injections);
 
   // Emit the response as one assistant line. Extension fields `system` + `tools`
   // (verbatim request body) ride on this line; the claude-jsonl adapter ignores
@@ -466,8 +450,8 @@ export function emit(rec: ProxyRecord): void {
       const alias = b.type === 'tool_use' && b.name ? DISPATCH_TOOL_ALIAS[b.name] : undefined;
       return alias ? { ...b, name: alias } : b;
     });
-  const roundIndex = roundCount.get(contextKey) ?? 0;
-  roundCount.set(contextKey, roundIndex + 1);
+  const roundIndex = state.roundIndex();
+  state.noteRound();
   appendClaudeLine(targetFile, {
     type: 'assistant',
     message: {

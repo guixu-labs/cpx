@@ -33,7 +33,7 @@ import {
   subagentFilePath,
   subagentsDirPath,
   subagentMetaPath,
-  readCaptureText,
+  forEachCaptureLine,
   writeMeta,
 } from './writer';
 import { readEnvelopeWithLegacy } from './envelope';
@@ -93,25 +93,8 @@ export function subIdFor(task: string): string {
 }
 
 // ── 捕获文件读取（重放/任务提取共用的最小解析）───────────────────────
-// 只解析目标类型行（JSON.stringify 键序 type 在前 → 前缀过滤掉绝大多数
-// 非目标行），坏行静默跳过：捕获重放宁缺毋滥，绝不阻断 emit。
-function forEachCaptureLine(file: string, onLine: (line: unknown) => void): void {
-  let text: string;
-  try {
-    text = readCaptureText(file);
-  } catch {
-    return; // 文件不存在 / 解压失败：重放场景合法（新会话无历史）
-  }
-  for (const raw of text.split('\n')) {
-    const line = raw.trim();
-    if (!line) continue;
-    try {
-      onLine(JSON.parse(line));
-    } catch {
-      // 坏行（截断写入等）：跳过
-    }
-  }
-}
+// 原语在 writer.forEachCaptureLine（emit-state 的盘上重建同源共用）：
+// 只解析目标类型行，坏行静默跳过：捕获重放宁缺毋滥，绝不阻断 emit。
 
 // 从捕获文件重放 Agent 派发登记。落盘的 assistant 行携带 message.content
 // tool_use 块（dsh 已别名成 Agent）；prompt.trim() 为键，首见优先（与 live

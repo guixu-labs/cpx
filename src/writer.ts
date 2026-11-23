@@ -149,3 +149,25 @@ export function compressCaptureFile(p: string): string {
 export function ensureWritableCapture(p: string): string {
   return decompressToPlain(resolveCapturePath(p));
 }
+
+// 捕获文件逐行重放的最小解析（盘上重建的共用原语：claude-linkage 的派发
+// 登记、claude-emit-state 的增量计数都从「捕获行 = 已发出的增量」这一真源
+// 重建进程内状态）。三形态透明解压读取；坏行静默跳过——重放场景宁缺毋滥，
+// 绝不阻断捕获主路径。
+export function forEachCaptureLine(file: string, onLine: (line: unknown) => void): void {
+  let text: string;
+  try {
+    text = readCaptureText(file);
+  } catch {
+    return; // 文件不存在 / 解压失败：重放场景合法（新会话无历史）
+  }
+  for (const raw of text.split('\n')) {
+    const line = raw.trim();
+    if (!line) continue;
+    try {
+      onLine(JSON.parse(line));
+    } catch {
+      // 坏行（截断写入等）：跳过
+    }
+  }
+}
