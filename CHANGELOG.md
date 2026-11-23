@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [v0.1.18] - 2026-11-23
 
 ### Fixed
 - 【子代理派发关联跨进程失守（孤儿泳道根治）】派发关联状态（agentDispatch 派发登记 / pendingSubMeta 挂起回填 / subIdForAgentId 成员头索引 / metaWritten 写一次守门）此前全部活在代理进程内存，会话跨多代理进程（resume / 长会话重启）时内存回填态失守：子代理首轮请求先落盘、meta 三字段全空挂起，父侧派发在**新进程**才到场——挂起集已随旧进程蒸发，meta 永不升级，insight 建桥三路（toolUseId 映射 / task_id 提取 / 时间邻近——resultJson 非空被失败守卫挡死）全断，后台子代理成孤儿（现场 solo:8ae4a944：44 派发 2 孤儿，69M/520M tokens 无归属）。架构级根治（新模块 `claude-linkage.ts`，原则「**盘上捕获文件是唯一真源**」）：① 派发登记启动重放——进程首见会话即从主/子捕获 jsonl（三形态透明解压）重放 Agent tool_use（dsh 别名归一与落盘同构，live 观察与重放产出同一登记表），wire 到场只做增量，不另造登记文件、无双写一致性；② meta 幂等升级写——write-once 改 null→有值补位（永不覆写非空字段），盘上 meta 即挂起状态，新派发到场（observeDispatch → 补链）与重启扫描（bootstrap → heal）两条路径共用同一升级写；③ 成员头跨进程稳定——`x-claude-code-agent-id` 落盘 meta（claudeAgentId），agentId 索引以盘上 meta 种子，compact 改写 msgs[0] 后的续会路由不再散落 sub-unknown 文件；④ meta 契约扩展（cc-subagent-meta 加字段不升版）——`task`（首个非空任务文本定格，升级写安全键：续会改写 msgs[0] 时不用新文本查别的派发）、`claudeAgentId`、`idSource: 'fileStem'`（规范 id 语义声明，claude 捕获文件名 id 恒为规范 id、成员 id 只是关联别名）。真机验证：solo:8ae4a944 现场捕获件（44 子代理 / .7z 压缩态 / 孤儿 meta 全空）单条 emit 触发 bootstrap 即完成两孤儿补链（toolUseId/name/task 全部落盘）；UT 新增 claude-linkage 6 例（重放种子 / 挂起补链 / 老格式 meta 回捕获文件回读 / 成员头续会路由 / 升级不覆写 / .7z 重放），claude-emitter 37 例 + 全量 UT 352 例 + e2e 全绿
