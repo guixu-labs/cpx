@@ -20,6 +20,7 @@ import {
   compressCaptureFile,
   ensureWritableCapture,
   appendClaudeLine,
+  forEachCaptureLine,
 } from '../../src/writer.ts';
 import { ensure7z, decompressToPlain } from '../../src/compression.ts';
 
@@ -191,5 +192,54 @@ describe('writer 7z at rest', () => {
     expect(insightSrc.slice(dtStart, dtEnd)).toContain("run7za(['e', '-so', archivePath], 1 << 30)");
     const rbStart = insightSrc.indexOf('export function readCaptureBuffer');
     expect(insightSrc.slice(rbStart)).toContain("run7za(['e', '-so', filePath], 1 << 30)");
+  });
+});
+
+describe('forEachCaptureLine 重放原语', () => {
+  it('Buffer 逐行切片，绝不整文件单字符串物化（大文件必炸回归锁）', () => {
+    const f = path.join(tmpRoot, 'cpx-lines.jsonl');
+    fs.writeFileSync(f, '{"type":"a"}\n{"type":"b"}\n{"type":"c"}\n');
+    const fullSize = fs.statSync(f).size;
+    const seen: unknown[] = [];
+    const toStringLens: number[] = [];
+    const spy = vi.spyOn(Buffer.prototype, 'toString');
+    try {
+      forEachCaptureLine(f, (line) => seen.push(line));
+      for (const inst of spy.mock.instances) toStringLens.push((inst as Buffer).length);
+    } finally {
+      spy.mockRestore();
+    }
+    expect(seen).toEqual([{ type: 'a' }, { type: 'b' }, { type: 'c' }]);
+    // 每行各自 toString（单行长度 << 整文件），无一次整文件 toString——
+    // 旧实现 readCaptureText 整文件 toString 在此 length === fullSize，必红。
+    expect(toStringLens.length).toBeGreaterThan(0);
+    for (const len of toStringLens) expect(len).toBeLessThan(fullSize);
+  });
+
+  it('读/解压失败显式 console.error，不静默吞掉', () => {
+    const bad = path.join(tmpRoot, 'cpx-bad.jsonl.7z');
+    fs.writeFileSync(bad, 'not-a-7z-archive');
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const seen: unknown[] = [];
+      forEachCaptureLine(bad, (line) => seen.push(line));
+      expect(seen).toEqual([]);
+      expect(err).toHaveBeenCalled();
+    } finally {
+      err.mockRestore();
+    }
+  });
+
+  it('文件不存在静默（新会话无历史的合法场景）', () => {
+    const missing = path.join(tmpRoot, 'cpx-none.jsonl');
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const seen: unknown[] = [];
+      forEachCaptureLine(missing, (line) => seen.push(line));
+      expect(seen).toEqual([]);
+      expect(err).not.toHaveBeenCalled();
+    } finally {
+      err.mockRestore();
+    }
   });
 });
