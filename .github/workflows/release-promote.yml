@@ -1,0 +1,66 @@
+name: Release Promote
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Published version to promote to latest (X.Y.Z)"
+        required: true
+        type: string
+      confirm_version:
+        description: "Re-enter the same version to confirm"
+        required: true
+        type: string
+      prune_legacy_tags:
+        description: "Remove legacy next/dev dist-tags after promotion"
+        required: true
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+
+env:
+  NPM_CONFIG_REGISTRY: "https://registry.npmjs.org/"
+
+concurrency:
+  group: npm-release
+  cancel-in-progress: false
+
+jobs:
+  promote:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    environment: npm-release
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22.14.0"
+
+      - name: Upgrade npm for Trusted Publishing
+        run: |
+          npm install --global npm@11.21.3
+          npm --version
+
+      - name: Promote packages to latest
+        env:
+          VERSION: ${{ inputs.version }}
+          CONFIRM_VERSION: ${{ inputs.confirm_version }}
+          PRUNE_LEGACY_TAGS: ${{ inputs.prune_legacy_tags }}
+        run: |
+          node scripts/release/promote.mjs --version "$VERSION" --confirm "$CONFIRM_VERSION" --prune-legacy "$PRUNE_LEGACY_TAGS"
+
+      - name: Verify registry state
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          node scripts/release/verify-registry.mjs --tag latest --version "$VERSION" --wait-seconds 300 --poll-seconds 15

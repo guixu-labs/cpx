@@ -1,0 +1,62 @@
+name: Release Dry Run
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/release-dry-run.yml"
+      - ".github/workflows/release-publish.yml"
+      - ".github/workflows/release-promote.yml"
+      - "bin/**"
+      - "package.json"
+      - "package-lock.json"
+      - "scripts/**"
+      - "src/**"
+      - "tests/**"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-dry-run-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  dry-run:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      CI: "true"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22.14.0"
+
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: Test
+        run: npm test
+
+      - name: Build release artifacts
+        run: npm run release:prepare
+
+      - name: Verify release artifacts
+        run: npm run release:verify
+
+      - name: Generate checksums
+        run: sha256sum release-artifacts/*.tgz > release-artifacts/SHA256SUMS
+
+      - name: Upload release candidates
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-candidates
+          path: release-artifacts/
+          if-no-files-found: error
+          retention-days: 7

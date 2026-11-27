@@ -4,6 +4,17 @@
   "type": "module",
   "description": "Generic agent<->model plaintext capture proxy for Context-Insight",
   "license": "SEE LICENSE IN LICENSE",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/guixu-labs/cpx.git"
+  },
+  "homepage": "https://github.com/guixu-labs/cpx#readme",
+  "bugs": {
+    "url": "https://github.com/guixu-labs/cpx/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
   "bin": {
     "cpx": "./bin/cpx.mjs"
   },
@@ -13,7 +24,7 @@
   "files": [
     "src",
     "bin",
-    "scripts",
+    "scripts/postinstall.mjs",
     "CHANGELOG.md"
   ],
   "scripts": {
@@ -22,7 +33,11 @@
     "cpx-cli": "tsx src/cli/cpx-cli.ts",
     "test": "bash scripts/run-tests.sh && bash scripts/run-tests.sh e2e",
     "test:ut": "bash scripts/run-tests.sh",
-    "test:e2e": "bash scripts/run-tests.sh e2e"
+    "test:e2e": "bash scripts/run-tests.sh e2e",
+    "release:preflight": "node scripts/release/preflight-publish.mjs",
+    "release:prepare": "node scripts/release/build-artifacts.mjs",
+    "release:verify": "node scripts/release/check-tarballs.mjs && node scripts/release/smoke-install.mjs",
+    "release:verify-registry": "node scripts/release/verify-registry.mjs"
   },
   "dependencies": {
     "7zip-bin": "^5.2.0",
