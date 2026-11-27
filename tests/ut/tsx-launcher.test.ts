@@ -34,7 +34,7 @@ function fakeTsxAt(dir: string): string {
     exports: { '.': './dist/loader.mjs' },
   }));
   fs.writeFileSync(path.join(dir, 'dist', 'loader.mjs'), 'export {}\n');
-  return pathToFileURL(path.join(dir, 'dist', 'loader.mjs')).href;
+  return pathToFileURL(fs.realpathSync(path.join(dir, 'dist', 'loader.mjs'))).href;
 }
 
 describe('resolveTsxLoader（从文件位置标准解析）', () => {

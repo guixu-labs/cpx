@@ -72,6 +72,12 @@ describe('npm publish readiness (context-cpx)', () => {
       p === 'tests' || p.startsWith('tests/') ||
       p === 'cpx-cli' ||
       p === 'install.sh' ||
+      p === '.github' || p.startsWith('.github/') ||
+      p === 'release-artifacts' || p.startsWith('release-artifacts/') ||
+      p === '.cannbot-pack' || p.startsWith('.cannbot-pack/') ||
+      p === 'scripts/pack-cannbot.mjs' ||
+      p === 'scripts/run-tests.sh' ||
+      p === 'scripts/release' || p.startsWith('scripts/release/') ||
       p === 'package-lock.json' ||
       p === 'node_modules' || p.startsWith('node_modules/');
     const leaked = files.filter(forbidden);
@@ -86,6 +92,13 @@ describe('npm publish readiness (context-cpx)', () => {
     expect(pkgJson.license).toBeTruthy();
     expect(pkgJson.engines?.node).toMatch(/>=20/);
     expect(pkgJson.files).toContain('bin');
+    expect(pkgJson.repository).toMatchObject({
+      type: 'git',
+      url: 'git+https://github.com/guixu-labs/cpx.git',
+    });
+    expect(pkgJson.homepage).toBe('https://github.com/guixu-labs/cpx#readme');
+    expect(pkgJson.bugs).toEqual({ url: 'https://github.com/guixu-labs/cpx/issues' });
+    expect(pkgJson.publishConfig?.access).toBe('public');
   });
 
   it('bin 启动器实跑冒烟：node bin/cpx.mjs --version 输出与单一版本源一致', () => {

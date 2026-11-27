@@ -1,0 +1,4 @@
+node_modules/
+.cannbot-pack/
+release-artifacts/
+coverage/

@@ -1,0 +1,177 @@
+name: Release Publish
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Git tag to release (vX.Y.Z, must exist and be contained in main)"
+        required: true
+        type: string
+      confirm_version:
+        description: "Version confirmation (X.Y.Z, must match package.json)"
+        required: true
+        type: string
+      mode:
+        description: "dry-run validates only; publish performs npm publication"
+        required: true
+        default: dry-run
+        type: choice
+        options:
+          - dry-run
+          - publish
+      dist_tag:
+        description: "Publish channel: beta for verification, latest goes straight to users"
+        required: true
+        default: beta
+        type: choice
+        options:
+          - beta
+          - latest
+
+permissions:
+  contents: read
+
+env:
+  NPM_CONFIG_REGISTRY: "https://registry.npmjs.org/"
+
+concurrency:
+  group: npm-release
+  cancel-in-progress: false
+
+jobs:
+  preflight:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.release_tag }}
+          fetch-depth: 0
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22.14.0"
+
+      - name: Upgrade npm for Trusted Publishing
+        run: |
+          npm install --global npm@11.21.3
+          npm --version
+
+      - name: Fetch main
+        run: git fetch origin main:refs/remotes/origin/main --force
+
+      - name: Resolve release version
+        id: version
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Validate release identity
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          CONFIRM_VERSION: ${{ inputs.confirm_version }}
+          MODE: ${{ inputs.mode }}
+          DIST_TAG: ${{ inputs.dist_tag }}
+        run: |
+          node scripts/release/preflight-publish.mjs --tag "$RELEASE_TAG" --confirm "$CONFIRM_VERSION" --mode "$MODE" --dist-tag "$DIST_TAG"
+
+  build:
+    needs: preflight
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      CI: "true"
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.release_tag }}
+          fetch-depth: 0
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22.14.0"
+
+      - name: Upgrade npm for Trusted Publishing
+        run: |
+          npm install --global npm@11.21.3
+          npm --version
+
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: Test
+        run: npm test
+
+      - name: Build release artifacts
+        run: npm run release:prepare
+
+      - name: Verify release artifacts
+        run: npm run release:verify
+
+      - name: Generate checksums
+        run: sha256sum release-artifacts/*.tgz > release-artifacts/SHA256SUMS
+
+      - name: Upload release candidates
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-candidates
+          path: release-artifacts/
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    needs:
+      - preflight
+      - build
+    if: inputs.mode == 'publish'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    environment: npm-release
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.release_tag }}
+          fetch-depth: 0
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22.14.0"
+
+      - name: Upgrade npm for Trusted Publishing
+        run: |
+          npm install --global npm@11.21.3
+          npm --version
+
+      - name: Download release candidates
+        uses: actions/download-artifact@v4
+        with:
+          name: release-candidates
+          path: release-artifacts
+
+      - name: Verify downloaded checksums
+        run: sha256sum -c release-artifacts/SHA256SUMS
+
+      - name: Publish packages to selected dist-tag
+        env:
+          VERSION: ${{ needs.preflight.outputs.version }}
+          DIST_TAG: ${{ inputs.dist_tag }}
+        run: |
+          npm publish "./release-artifacts/context-cpx-${VERSION}.tgz" --tag "$DIST_TAG" --access public --provenance
+          npm publish "./release-artifacts/cannbot-proxy-${VERSION}.tgz" --tag "$DIST_TAG" --access public --provenance
+
+      - name: Verify selected dist-tag
+        env:
+          VERSION: ${{ needs.preflight.outputs.version }}
+          DIST_TAG: ${{ inputs.dist_tag }}
+        run: node scripts/release/verify-registry.mjs --tag "$DIST_TAG" --version "$VERSION" --wait-seconds 300 --poll-seconds 15
