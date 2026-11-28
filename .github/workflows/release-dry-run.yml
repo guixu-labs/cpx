@@ -41,9 +41,6 @@ jobs:
       - name: Install dependencies
         run: npm ci --no-audit --no-fund
 
-      - name: Test
-        run: npm test
-
       - name: Apply automatic beta version
         env:
           GITHUB_RUN_NUMBER: ${{ github.run_number }}
@@ -52,6 +49,9 @@ jobs:
           BETA_VERSION=$(node scripts/release/prepare-beta-version.mjs --print)
           echo "beta version: $BETA_VERSION"
           node scripts/release/prepare-beta-version.mjs --version "$BETA_VERSION"
+
+      - name: Test
+        run: npm test
 
       - name: Build release artifacts
         run: npm run release:prepare
