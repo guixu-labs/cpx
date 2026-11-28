@@ -39,7 +39,7 @@ if (args[0] === 'view') {
 }
 `;
 
-function runPromote(distTags: Record<string, Record<string, string>>) {
+function runPromote(distTags: Record<string, Record<string, string>>, version = '0.1.20') {
   const tmp = tempPath('release-promote-cpx-');
   writeExecutable(path.join(tmp, 'npm'), FAKE_PROMOTE_NPM);
   const statePath = path.join(tmp, 'state.json');
@@ -48,7 +48,7 @@ function runPromote(distTags: Record<string, Record<string, string>>) {
 
   const result = spawnSync(
     process.execPath,
-    [tool('promote.mjs'), '--version', '0.1.20', '--confirm', '0.1.20', '--prune-legacy', 'true'],
+    [tool('promote.mjs'), '--version', version, '--confirm', version, '--prune-legacy', 'true'],
     {
       cwd: PKG_DIR,
       encoding: 'utf8',
@@ -83,6 +83,11 @@ describe('release pipeline workflows', () => {
     const publishJob = publishWorkflow.slice(publishWorkflow.indexOf('\n  publish:'));
     expect(publishJob).toContain("if: inputs.mode == 'publish'");
     expect(publishJob).toContain('name: Verify selected dist-tag');
+    expect(publishWorkflow).toContain('prepare-beta-version.mjs --print');
+    expect(publishWorkflow).toContain('source_sha');
+    expect(publishWorkflow).toContain('name: Create beta release tag');
+    expect(fs.readFileSync(path.join(PKG_DIR, '.github/workflows/release-dry-run.yml'), 'utf8'))
+      .toContain('name: Apply automatic beta version');
   });
 
   it('promote 在移动 latest 后做有界轮询验证', () => {
@@ -107,6 +112,13 @@ describe('release pipeline workflows', () => {
 });
 
 describe('release promote atomicity', () => {
+  it('beta 预发布版本不能提升到 latest', () => {
+    const { status, log, stderr } = runPromote({}, '0.1.20-beta.20261128.1.1');
+    expect(status).not.toBe(0);
+    expect(log).toEqual([]);
+    expect(stderr).toContain('latest promotion requires a stable version');
+  });
+
   it('任一包未发布时不产生任何 dist-tag 变更', () => {
     const { status, log } = runPromote({
       'context-cpx': { beta: '0.1.20' },
@@ -131,7 +143,7 @@ describe('release promote atomicity', () => {
 });
 
 describe('release preflight', () => {
-  it('版本、tag、main 归属与 npm 冲突检查通过后可发布', () => {
+  it('latest 版本的 tag、main 归属与 npm 冲突检查通过后可发布', () => {
     const tmp = tempPath('release-preflight-cpx-');
     const fakeNpm = `#!/usr/bin/env node
 const args = process.argv.slice(2);
@@ -150,7 +162,7 @@ process.exit(2);
 
     const result = spawnSync(
       process.execPath,
-      [tool('preflight-publish.mjs'), '--tag', `v${VERSION}`, '--confirm', VERSION, '--mode', 'publish', '--dist-tag', 'beta'],
+      [tool('preflight-publish.mjs'), '--version', VERSION, '--tag', `v${VERSION}`, '--confirm', VERSION, '--mode', 'publish', '--dist-tag', 'latest'],
       {
         cwd: PKG_DIR,
         encoding: 'utf8',
@@ -160,6 +172,87 @@ process.exit(2);
     fs.rmSync(tmp, { recursive: true, force: true });
 
     expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
-    expect(result.stdout).toContain(`[release-preflight] publish: v${VERSION} / ${VERSION} / beta OK`);
+    expect(result.stdout).toContain(`[release-preflight] publish: v${VERSION} / ${VERSION} / latest OK`);
+  });
+
+  it('beta 自动版本不需要 tag，也不检查 package.json 预发布版本', () => {
+    const tmp = tempPath('beta-preflight-cpx-');
+    writeExecutable(path.join(tmp, 'npm'), `#!/usr/bin/env node
+const args = process.argv.slice(2);
+if (args[0] !== 'view') process.exit(2);
+if (args[1].includes('@')) process.exit(1);
+process.stdout.write(JSON.stringify({ latest: '0.1.19', beta: '0.1.19-beta.1' }));
+`);
+    writeExecutable(path.join(tmp, 'git'), `#!/usr/bin/env node
+const args = process.argv.slice(2);
+if (args[0] === 'rev-parse') { process.stdout.write('abc123\\n'); process.exit(0); }
+process.exit(2);
+`);
+
+    const version = '0.1.20-beta.20261128.777.2';
+    const result = spawnSync(
+      process.execPath,
+      [tool('preflight-publish.mjs'), '--version', version, '--mode', 'publish', '--dist-tag', 'beta'],
+      {
+        cwd: PKG_DIR,
+        encoding: 'utf8',
+        env: { ...process.env, PATH: `${tmp}${path.delimiter}${process.env.PATH ?? ''}` },
+      },
+    );
+    fs.rmSync(tmp, { recursive: true, force: true });
+
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+    expect(result.stdout).toContain(`[release-preflight] publish: (auto) / ${version} / beta OK`);
+  });
+});
+
+describe('automatic beta version', () => {
+  it('从 stable 基线生成下一个 patch 的 beta 版本', () => {
+    const tmp = tempPath('prepare-beta-version-cpx-');
+    writeExecutable(path.join(tmp, 'npm'), `#!/usr/bin/env node
+const args = process.argv.slice(2);
+if (args[0] !== 'view') process.exit(2);
+process.stdout.write(JSON.stringify({ latest: '0.1.19', beta: '0.1.19-beta.1' }));
+`);
+    const result = spawnSync(process.execPath, [tool('prepare-beta-version.mjs'), '--print'], {
+      cwd: PKG_DIR,
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        PATH: `${tmp}${path.delimiter}${process.env.PATH ?? ''}`,
+        GITHUB_RUN_NUMBER: '777',
+        GITHUB_RUN_ATTEMPT: '2',
+      },
+    });
+    fs.rmSync(tmp, { recursive: true, force: true });
+
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout.trim()).toMatch(/^0\.1\.20-beta\.\d{8}\.777\.2$/);
+  });
+
+  it('显式 beta 版本只写入 runner 临时版本源，不要求仓库 check-in', () => {
+    const tmp = tempPath('beta-version-files-cpx-');
+    const versionPath = path.join(tmp, 'src/version.ts');
+    fs.mkdirSync(path.dirname(versionPath), { recursive: true });
+    fs.copyFileSync(path.join(PKG_DIR, 'package.json'), path.join(tmp, 'package.json'));
+    fs.copyFileSync(path.join(PKG_DIR, 'src/version.ts'), versionPath);
+    fs.copyFileSync(path.join(PKG_DIR, 'package-lock.json'), path.join(tmp, 'package-lock.json'));
+
+    const version = '0.1.20-beta.20261128.777.2';
+    const result = spawnSync(process.execPath, [
+      tool('prepare-beta-version.mjs'),
+      '--root', tmp,
+      '--version', version,
+    ], { cwd: PKG_DIR, encoding: 'utf8' });
+    const pkg = JSON.parse(fs.readFileSync(path.join(tmp, 'package.json'), 'utf8'));
+    const versionSource = fs.readFileSync(versionPath, 'utf8');
+    const lock = JSON.parse(fs.readFileSync(path.join(tmp, 'package-lock.json'), 'utf8'));
+    fs.rmSync(tmp, { recursive: true, force: true });
+
+    expect(result.status, result.stderr).toBe(0);
+    expect(pkg.version).toBe(version);
+    expect(versionSource).toContain(`export const VERSION = "${version}"`);
+    expect(lock.version).toBe(version);
+    expect(lock.packages?.['']?.version).toBe(version);
   });
 });

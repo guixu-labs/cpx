@@ -33,8 +33,8 @@ if (!version || !confirmVersion || version !== confirmVersion) {
   usage()
   process.exit(2)
 }
-if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(version)) {
-  console.error(`[release-promote] version is not semver: ${version}`)
+if (!/^\d+\.\d+\.\d+$/.test(version)) {
+  console.error(`[release-promote] latest promotion requires a stable version: ${version}`)
   process.exit(2)
 }
 

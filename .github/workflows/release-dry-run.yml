@@ -44,6 +44,15 @@ jobs:
       - name: Test
         run: npm test
 
+      - name: Apply automatic beta version
+        env:
+          GITHUB_RUN_NUMBER: ${{ github.run_number }}
+          GITHUB_RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          BETA_VERSION=$(node scripts/release/prepare-beta-version.mjs --print)
+          echo "beta version: $BETA_VERSION"
+          node scripts/release/prepare-beta-version.mjs --version "$BETA_VERSION"
+
       - name: Build release artifacts
         run: npm run release:prepare
 
