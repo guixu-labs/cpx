@@ -35,6 +35,7 @@
     "test:ut": "bash scripts/run-tests.sh",
     "test:e2e": "bash scripts/run-tests.sh e2e",
     "release:preflight": "node scripts/release/preflight-publish.mjs",
+    "release:prepare-beta-version": "node scripts/release/prepare-beta-version.mjs",
     "release:prepare": "node scripts/release/build-artifacts.mjs",
     "release:verify": "node scripts/release/check-tarballs.mjs && node scripts/release/smoke-install.mjs",
     "release:verify-registry": "node scripts/release/verify-registry.mjs"
