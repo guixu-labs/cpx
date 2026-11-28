@@ -7,8 +7,9 @@
 // See LICENSE in the root of the software repository for the full text of the License.
 
 import { describe, it, expect } from 'vitest';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
+import { createServer } from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -261,4 +262,73 @@ process.stdout.write(JSON.stringify({ latest: '0.1.19', beta: '0.1.19-beta.1' })
     expect(lock.version).toBe(version);
     expect(lock.packages?.['']?.version).toBe(version);
   });
+});
+
+describe('registry install propagation retry', () => {
+  it('dist-tag 可见但 npm install 暂时 ETARGET 时会在同一 deadline 内重试', async () => {
+    const server = createServer((_request, response) => {
+      response.setHeader('content-type', 'application/json');
+      response.end(JSON.stringify({ beta: '9.9.9' }));
+    });
+    await new Promise<void>((resolve, reject) => {
+      server.once('error', reject);
+      server.listen(0, '127.0.0.1', resolve);
+    });
+    const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('missing test registry port');
+
+    const tmp = tempPath('registry-install-retry-cpx-');
+    const counterPath = path.join(tmp, 'counts.json');
+    writeExecutable(path.join(tmp, 'npm'), `#!/usr/bin/env node
+const fs = require('node:fs');
+const path = require('node:path');
+const args = process.argv.slice(2);
+if (args[0] !== 'install') process.exit(2);
+const prefix = args[args.indexOf('--prefix') + 1];
+const spec = args[args.indexOf('--prefix') + 2];
+const name = spec.split('@')[0];
+const counts = fs.existsSync(${JSON.stringify(counterPath)}) ? JSON.parse(fs.readFileSync(${JSON.stringify(counterPath)}, 'utf8')) : {};
+if (name === 'cannbot-proxy' && !counts[name]) {
+  counts[name] = 1;
+  fs.writeFileSync(${JSON.stringify(counterPath)}, JSON.stringify(counts));
+  console.error('npm error code ETARGET');
+  process.exit(1);
+}
+counts[name] = (counts[name] || 0) + 1;
+fs.writeFileSync(${JSON.stringify(counterPath)}, JSON.stringify(counts));
+fs.mkdirSync(path.join(prefix, 'bin'), { recursive: true });
+const file = path.join(prefix, 'bin', 'cpx');
+fs.writeFileSync(file, '#!/bin/sh\\necho "cpx v9.9.9"\\n', { mode: 0o755 });
+`);
+
+    try {
+      const result = await new Promise<{ code: number | null; stdout: string; stderr: string }>((resolve, reject) => {
+        const child = spawn(process.execPath, [
+          tool('verify-registry.mjs'),
+          '--tag', 'beta',
+          '--version', '9.9.9',
+          '--wait-seconds', '5',
+          '--poll-seconds', '1',
+          '--registry', `http://127.0.0.1:${address.port}/`,
+        ], {
+          cwd: PKG_DIR,
+          env: { ...process.env, PATH: `${tmp}${path.delimiter}${process.env.PATH ?? ''}` },
+        });
+        let stdout = '';
+        let stderr = '';
+        child.stdout.on('data', (chunk) => { stdout += chunk; });
+        child.stderr.on('data', (chunk) => { stderr += chunk; });
+        child.once('error', reject);
+        child.once('close', (code) => resolve({ code, stdout, stderr }));
+      });
+
+      expect(result.code, `${result.stdout}\n${result.stderr}`).toBe(0);
+      expect(result.stdout).toContain('[registry-install] attempt 1: cannbot-proxy@beta not installable yet');
+      expect(result.stdout).toContain('[registry-smoke] context-cpx@beta (9.9.9)');
+      expect(result.stdout).toContain('[registry-smoke] cannbot-proxy@beta (9.9.9)');
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  }, 15_000);
 });
