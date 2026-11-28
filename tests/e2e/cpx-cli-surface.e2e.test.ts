@@ -51,7 +51,7 @@ describe('cpx CLI 面（--version/--help/completion/list/config 联动）', () =
   it('① --version / --help：版本单源 + 用法面', async () => {
     const v = await runCommand(sandbox, 'bash', ['cpx-cli', '--version']);
     expect(v.code, `output:\n${v.output}`).toBe(0);
-    expect(v.output.trim()).toMatch(/^cpx v\d+\.\d+\.\d+ \(/);
+    expect(v.output.trim()).toMatch(/^cpx v\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)? \(/);
 
     const h = await runCommand(sandbox, 'bash', ['cpx-cli', '--help']);
     expect(h.code, `output:\n${h.output}`).toBe(0);
