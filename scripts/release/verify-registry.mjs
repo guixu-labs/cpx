@@ -13,8 +13,9 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
-const registry = 'https://registry.npmjs.org/'
-const usage = 'Usage: node scripts/release/verify-registry.mjs --tag beta|latest|next|dev --version X.Y.Z [--wait-seconds N] [--poll-seconds N]'
+const requestedRegistry = readArg('--registry')
+const registry = requestedRegistry ? `${requestedRegistry.replace(/\/+$/, '')}/` : 'https://registry.npmjs.org/'
+const usage = 'Usage: node scripts/release/verify-registry.mjs --tag beta|latest|next|dev --version X.Y.Z [--wait-seconds N] [--poll-seconds N] [--registry URL]'
 
 function readArg(name) {
   const index = process.argv.indexOf(name)
@@ -49,10 +50,10 @@ function sleep(milliseconds) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds))
 }
 
-async function fetchDistTags(name) {
+async function fetchDistTags(name, timeoutMs) {
   const url = `${registry}-/package/${encodeURIComponent(name)}/dist-tags?t=${Date.now()}`
   const response = await fetch(url, {
-    signal: AbortSignal.timeout(30_000),
+    signal: AbortSignal.timeout(timeoutMs),
     headers: {
       accept: 'application/json',
       'cache-control': 'no-cache',
@@ -63,16 +64,24 @@ async function fetchDistTags(name) {
   return response.json()
 }
 
-async function waitForTag() {
-  const deadline = Date.now() + waitSeconds * 1000
+async function waitForTag(deadline) {
   let attempt = 0
   while (true) {
+    if (Date.now() >= deadline) {
+      throw new Error(`registry tag ${tag} did not reach ${version} within ${waitSeconds}s`)
+    }
     attempt += 1
     const states = {}
     const pending = []
     for (const spec of packages) {
+      const remainingMs = deadline - Date.now()
+      if (remainingMs <= 0) {
+        states[spec.name] = states[spec.name] ?? '(deadline reached)'
+        pending.push(spec.name)
+        break
+      }
       try {
-        const distTags = await fetchDistTags(spec.name)
+        const distTags = await fetchDistTags(spec.name, Math.max(1, Math.min(30_000, remainingMs)))
         states[spec.name] = distTags[tag] ?? '(missing)'
         if (distTags[tag] !== version) pending.push(spec.name)
       } catch (error) {
@@ -87,10 +96,9 @@ async function waitForTag() {
 
     const state = packages.map((spec) => `${spec.name}=${states[spec.name]}`).join(', ')
     console.log(`[registry-wait] attempt ${attempt}: ${state}`)
-    if (Date.now() >= deadline) {
-      throw new Error(`registry tag ${tag} did not reach ${version} within ${waitSeconds}s: ${state}`)
-    }
-    await sleep(Math.min(pollSeconds * 1000, Math.max(0, deadline - Date.now())))
+    const remainingMs = deadline - Date.now()
+    if (remainingMs <= 0) throw new Error(`registry tag ${tag} did not reach ${version} within ${waitSeconds}s: ${state}`)
+    await sleep(Math.min(pollSeconds * 1000, remainingMs))
   }
 }
 
@@ -109,7 +117,41 @@ function run(command, args, options = {}) {
   return result
 }
 
-if (waitSeconds > 0) await waitForTag()
+function tryRun(command, args, options = {}) {
+  return spawnSync(command, args, {
+    encoding: 'utf8',
+    timeout: options.timeout ?? 300_000,
+    maxBuffer: 32 * 1024 * 1024,
+    ...options,
+  })
+}
+
+function failureDetail(command, args, result) {
+  const detail = [result.stdout, result.stderr, result.error?.message].filter(Boolean).join('\n').trim()
+  return `${command} ${args.join(' ')} failed with exit ${result.status ?? 'spawn-error'}${detail ? `\n${detail}` : ''}`
+}
+
+async function installWithRetry(spec, temp, prefix, env, deadline) {
+  const args = ['install', '--global', '--prefix', prefix, `${spec.name}@${tag}`, '--no-audit', '--no-fund', '--no-package-lock', '--prefer-online']
+  let attempt = 0
+  while (true) {
+    attempt += 1
+    const remainingMs = deadline - Date.now()
+    const timeout = waitSeconds > 0 ? Math.max(1, Math.min(300_000, remainingMs)) : 300_000
+    const result = tryRun('npm', args, { cwd: temp, env, timeout })
+    if (!result.error && result.status === 0) return
+
+    const failure = failureDetail('npm', args, result)
+    const retryBudget = deadline - Date.now()
+    if (waitSeconds === 0 || retryBudget <= 0) throw new Error(failure)
+    const delay = Math.min(pollSeconds * 1000, retryBudget)
+    console.log(`[registry-install] attempt ${attempt}: ${spec.name}@${tag} not installable yet; retrying in ${Math.ceil(delay / 1000)}s`)
+    await sleep(delay)
+  }
+}
+
+const deadline = Date.now() + waitSeconds * 1000
+if (waitSeconds > 0) await waitForTag(deadline)
 
 for (const spec of packages) {
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), `${spec.name}-registry-smoke-`))
@@ -133,7 +175,7 @@ for (const spec of packages) {
   }
 
   try {
-    run('npm', ['install', '--global', '--prefix', prefix, `${spec.name}@${tag}`, '--no-audit', '--no-fund', '--no-package-lock', '--prefer-online'], { cwd: temp, env })
+    await installWithRetry(spec, temp, prefix, env, deadline)
     const executable = path.join(prefix, 'bin', process.platform === 'win32' ? `${spec.command}.cmd` : spec.command)
     const output = run(executable, ['--version'], { cwd: temp, env, timeout: 60_000 }).stdout.trim()
     if (!output.includes(`cpx v${version}`)) {
