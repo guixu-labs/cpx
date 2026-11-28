@@ -84,11 +84,12 @@ jobs:
           CONFIRM_VERSION: ${{ inputs.confirm_version }}
           MODE: ${{ inputs.mode }}
           DIST_TAG: ${{ inputs.dist_tag }}
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
           if [ "$DIST_TAG" = "beta" ]; then
-            node scripts/release/preflight-publish.mjs --version "${{ needs.preflight.outputs.version }}" --mode "$MODE" --dist-tag beta
+            node scripts/release/preflight-publish.mjs --version "$VERSION" --mode "$MODE" --dist-tag beta
           else
-            node scripts/release/preflight-publish.mjs --version "${{ needs.preflight.outputs.version }}" --tag "$RELEASE_TAG" --confirm "$CONFIRM_VERSION" --mode "$MODE" --dist-tag latest
+            node scripts/release/preflight-publish.mjs --version "$VERSION" --tag "$RELEASE_TAG" --confirm "$CONFIRM_VERSION" --mode "$MODE" --dist-tag latest
           fi
 
   build:
