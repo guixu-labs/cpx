@@ -86,6 +86,12 @@ describe('release pipeline workflows', () => {
     expect(publishWorkflow).toContain('prepare-beta-version.mjs --print');
     expect(publishWorkflow).toContain('source_sha');
     expect(publishWorkflow).toContain('name: Create beta release tag');
+    expect(publishWorkflow).toContain('VERSION: ${{ steps.version.outputs.version }}');
+    const validateStart = publishWorkflow.indexOf('name: Validate release identity');
+    const validateEnd = publishWorkflow.indexOf('\n  build:', validateStart);
+    const validateStep = publishWorkflow.slice(validateStart, validateEnd);
+    expect(validateStep).toContain('--version "$VERSION"');
+    expect(validateStep).not.toContain('--version "${{ needs.preflight.outputs.version }}"');
     expect(fs.readFileSync(path.join(PKG_DIR, '.github/workflows/release-dry-run.yml'), 'utf8'))
       .toContain('name: Apply automatic beta version');
   });
